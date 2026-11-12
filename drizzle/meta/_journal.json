@@ -57,6 +57,13 @@
       "when": 1794469428462,
       "tag": "0007_yielding_rafael_vega",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1794474195817,
+      "tag": "0008_pretty_hex",
+      "breakpoints": true
     }
   ]
 }

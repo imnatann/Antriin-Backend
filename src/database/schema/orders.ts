@@ -238,6 +238,9 @@ export const orderPayments = pgTable(
   },
   (table) => [
     uniqueIndex('order_payments_order_unique').on(table.orderId),
+    // Composite FK target for refunds: a refund must point at a payment of the
+    // same order, which the database enforces via (order_id, id).
+    unique('order_payments_order_id_id_uq').on(table.orderId, table.id),
     uniqueIndex('order_payments_ledger_transaction_unique').on(
       table.ledgerTransactionId,
     ),

@@ -1269,6 +1269,97 @@ describe('Catalog PostgreSQL integration', { skip: !testDatabaseUrl }, () => {
     assert.ok(ids.includes(itemId));
   });
 
+  it('quote and catalog mutations never lock each other (root 40P01 fix)', async () => {
+    const { itemId } = await seedItem(tenantA, ownerA, { priceMinor: '8000' });
+
+    // Direction 1 (repro): a catalog mutation already holds FOR UPDATE on the
+    // item row; a quote touching the same item must not queue behind it.
+    const holder = await pool.connect();
+    try {
+      await holder.query('BEGIN');
+      await holder.query('SELECT id FROM menu_items WHERE id = $1 FOR UPDATE', [
+        itemId,
+      ]);
+      const client = await pool.connect();
+      try {
+        await client.query('BEGIN');
+        await client.query("SET LOCAL lock_timeout = '2s'");
+        const startedAt = Date.now();
+        const quote = await catalog.quote(client, tenantA, slotA, [
+          { menuItemId: itemId, quantity: 1, optionIds: [] },
+        ]);
+        const elapsedMs = Date.now() - startedAt;
+        await client.query('ROLLBACK');
+        assert.equal(quote.items[0].menuItemId, itemId);
+        assert.ok(
+          elapsedMs < 1500,
+          `quote waited ${elapsedMs}ms behind a catalog mutation`,
+        );
+      } finally {
+        client.release();
+      }
+    } finally {
+      await holder.query('ROLLBACK').catch(() => undefined);
+      holder.release();
+    }
+
+    // Direction 2: an open checkout transaction that already ran the quote
+    // must not block a concurrent catalog mutation on the same rows.
+    const quoter = await pool.connect();
+    try {
+      await quoter.query('BEGIN');
+      await catalog.quote(quoter, tenantA, slotA, [
+        { menuItemId: itemId, quantity: 1, optionIds: [] },
+      ]);
+      // Transaction intentionally left open here.
+      const updater = await pool.connect();
+      try {
+        await updater.query('BEGIN');
+        await updater.query("SET LOCAL lock_timeout = '2s'");
+        const startedAt = Date.now();
+        const bumped = await updater.query(
+          `UPDATE menu_items
+              SET price_minor = '8500', version = version + 1, updated_at = now()
+            WHERE tenant_id = $1 AND id = $2 AND version = 1
+            RETURNING version`,
+          [tenantA, itemId],
+        );
+        const elapsedMs = Date.now() - startedAt;
+        await updater.query('COMMIT');
+        assert.equal(bumped.rows[0].version, 2);
+        assert.ok(
+          elapsedMs < 1500,
+          `catalog mutation waited ${elapsedMs}ms behind an open quote`,
+        );
+      } finally {
+        updater.release();
+      }
+      await quoter.query('ROLLBACK');
+    } finally {
+      await quoter.query('ROLLBACK').catch(() => undefined);
+      quoter.release();
+    }
+
+    // Business behavior unchanged: optimistic concurrency still enforced.
+    const viaService = await catalog.updateMenuItem(ownerA, tenantA, itemId, {
+      priceMinor: '9000',
+      expectedVersion: 2,
+      reason: 'Post-fix consistency check',
+    });
+    assert.equal(viaService.data.version, 3);
+    await assert.rejects(
+      catalog.updateMenuItem(ownerA, tenantA, itemId, {
+        priceMinor: '9500',
+        expectedVersion: 2,
+        reason: 'Stale retry must conflict',
+      }),
+      (error: unknown) => {
+        assert.equal(httpStatus(error), 409);
+        return true;
+      },
+    );
+  });
+
   it('quote never locks the pickup slot row (advisory validation, root D15)', async () => {
     const { itemId } = await seedItem(tenantA, ownerA, { priceMinor: '7000' });
     const holder = await pool.connect();

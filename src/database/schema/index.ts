@@ -82,3 +82,5 @@ export * from './audit';
 export * from './catalog';
 export * from './orders';
 export * from './payments';
+export * from './cases';
+export * from './refunds';

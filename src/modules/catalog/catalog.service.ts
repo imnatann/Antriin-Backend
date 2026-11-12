@@ -345,12 +345,15 @@ export class CatalogService {
 
   /**
    * Build the server-side price snapshot used by checkout. ADVISORY and
-   * read-only: it never reserves slot capacity, never moves money and never
-   * locks the pickup_slots row (assertBookableSlot mode 'none'), so a
-   * concurrent reserveForCheckout (FOR UPDATE) can never deadlock against a
-   * quote. The quote does not guarantee price or slot availability; final
-   * validation authority is reserveForCheckout inside the checkout
-   * transaction (D15 order: INSERT orders -> reserve -> debit).
+   * read-only: it never reserves slot capacity, never moves money and takes
+   * NO row locks on the read path — neither the pickup_slots row
+   * (assertBookableSlot mode 'none') nor catalog rows (plain SELECT, root
+   * decision after a second 40P01 finding: quote FOR SHARE vs catalog
+   * mutation FOR UPDATE on the same item deadlocked). Mutations remain the
+   * only writers and keep FOR UPDATE + version guards; final capacity
+   * authority is reserveForCheckout inside the checkout transaction (D15
+   * order: INSERT orders -> reserve -> debit). The quote does not guarantee
+   * price or slot availability.
    *
    * The returned quoteHash is a sha256 over the canonicalized snapshot (lines
    * sorted by menu item id, options sorted by group/choice id), so equivalent
@@ -397,8 +400,7 @@ export class CatalogService {
            ON cat.tenant_id = mi.tenant_id AND cat.id = mi.category_id
         WHERE mi.tenant_id = $1 AND mi.id = ANY($2::uuid[])
           AND mi.status = 'active' AND cat.status = 'active'
-        ORDER BY mi.id
-        FOR SHARE OF mi, cat`,
+        ORDER BY mi.id`,
       [tenantId, itemIds],
     );
     if (itemResult.rows.length !== itemIds.length) {
@@ -411,8 +413,7 @@ export class CatalogService {
          FROM menu_option_groups
         WHERE tenant_id = $1 AND menu_item_id = ANY($2::uuid[])
           AND status = 'active'
-        ORDER BY menu_item_id, sort_order, id
-        FOR SHARE`,
+        ORDER BY menu_item_id, sort_order, id`,
       [tenantId, itemIds],
     );
     const groupsByItem = new Map<string, OptionGroupRow[]>();
@@ -432,8 +433,7 @@ export class CatalogService {
                ON grp.tenant_id = choice.tenant_id AND grp.id = choice.group_id
             WHERE choice.tenant_id = $1 AND choice.group_id = ANY($2::uuid[])
               AND choice.status = 'active' AND grp.status = 'active'
-            ORDER BY choice.group_id, choice.id
-            FOR SHARE OF choice, grp`,
+            ORDER BY choice.group_id, choice.id`,
           [tenantId, groupIds],
         )
       : { rows: [] as OptionChoiceRow[] };
