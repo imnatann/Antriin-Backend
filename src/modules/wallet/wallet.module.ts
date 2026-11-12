@@ -1,4 +1,12 @@
 import { Module } from '@nestjs/common';
-// Domain scaffold; endpoints and authorization follow docs/REQUIREMENTS-API.md.
-@Module({})
+import { DatabaseModule } from '../../database/database.module';
+import { AuthModule } from '../auth/auth.module';
+import { WalletController } from './wallet.controller';
+import { WalletService } from './wallet.service';
+@Module({
+  imports: [DatabaseModule, AuthModule],
+  controllers: [WalletController],
+  providers: [WalletService],
+  exports: [WalletService],
+})
 export class WalletModule {}

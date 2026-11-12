@@ -8,6 +8,41 @@
       "when": 1794443573568,
       "tag": "0000_pale_the_phantom",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1794445247623,
+      "tag": "0001_round_trauma",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1794445770581,
+      "tag": "0002_certain_barracuda",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1794445801438,
+      "tag": "0003_rainy_jetstream",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1794446173308,
+      "tag": "0004_amazing_wilson_fisk",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1794446529272,
+      "tag": "0005_audit_retention",
+      "breakpoints": true
     }
   ]
 }

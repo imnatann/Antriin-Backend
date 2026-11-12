@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { BullModule } from '@nestjs/bullmq';
 import { ConfigService } from '@nestjs/config';
 export const MAINTENANCE_QUEUE = 'maintenance';
+export const DOMAIN_EVENTS_QUEUE = 'domain-events';
 @Module({
   imports: [
     BullModule.forRootAsync({
@@ -21,6 +22,7 @@ export const MAINTENANCE_QUEUE = 'maintenance';
       }),
     }),
     BullModule.registerQueue({ name: MAINTENANCE_QUEUE }),
+    BullModule.registerQueue({ name: DOMAIN_EVENTS_QUEUE }),
   ],
   exports: [BullModule],
 })

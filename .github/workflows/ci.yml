@@ -28,6 +28,7 @@ jobs:
       TEST_DATABASE_URL: postgresql://antriin:ci_only@127.0.0.1:5432/antriin
       REDIS_HOST: 127.0.0.1
       REDIS_PORT: 6379
+      TEST_REDIS_PORT: 6379
       CORS_ORIGINS: http://localhost:3001
     steps:
       - uses: actions/checkout@v4

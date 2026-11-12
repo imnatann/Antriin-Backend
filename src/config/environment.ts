@@ -36,12 +36,12 @@ export const environmentSchema = Joi.object({
     }
     return value;
   }),
-  AUTH_OTP_TTL_SECONDS: Joi.number().integer().min(30).max(900).default(300),
+  AUTH_OTP_TTL_SECONDS: Joi.number().integer().min(60).max(600).default(300),
   AUTH_OTP_MAX_ATTEMPTS: Joi.number().integer().min(1).max(10).default(5),
   AUTH_OTP_RESEND_COOLDOWN_SECONDS: Joi.number()
     .integer()
     .min(30)
-    .max(600)
+    .max(300)
     .default(60),
   AUTH_SESSION_TTL_SECONDS: Joi.number()
     .integer()

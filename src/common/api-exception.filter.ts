@@ -46,7 +46,7 @@ export class ApiExceptionFilter implements ExceptionFilter {
     const declaredCode = fields.code;
     const code =
       typeof declaredCode === 'string' &&
-      /^[A-Z][A-Z0-9_]{1,63}$/.test(declaredCode)
+      /^[A-Z][A-Z0-9_]{1,63}$/i.test(declaredCode)
         ? declaredCode
         : (codes[status] ??
           (status >= 500 ? 'INTERNAL_ERROR' : 'REQUEST_FAILED'));
@@ -64,9 +64,16 @@ export class ApiExceptionFilter implements ExceptionFilter {
           : 'An unexpected error occurred'
         : typeof fields.message === 'string'
           ? fields.message
-          : typeof body === 'string'
-            ? body
-            : 'Request rejected';
+          : 'Request rejected';
+    const retry = fields.retryAfterSeconds;
+    const retryAfter =
+      typeof retry === 'number' &&
+      Number.isInteger(retry) &&
+      retry >= 1 &&
+      retry <= 86400
+        ? retry
+        : undefined;
+    if (retryAfter) response.header('retry-after', String(retryAfter));
     void response
       .header('x-request-id', requestId)
       .status(status)
@@ -76,6 +83,7 @@ export class ApiExceptionFilter implements ExceptionFilter {
           message,
           ...(details ? { details } : {}),
           request_id: requestId,
+          ...(retryAfter ? { retry_after_seconds: retryAfter } : {}),
         },
       });
   }

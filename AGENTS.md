@@ -25,7 +25,7 @@ Panduan ini berlaku untuk seluruh repository `Antriin-Backend`. Baca sebelum men
 
 ## Status fondasi
 
-Saat panduan ini dibuat, hanya endpoint health yang aktif. Modul bisnis sudah terdaftar sebagai scaffold; auth, RBAC, order, wallet/ledger, refund, payout, AI dan notifikasi bisnis belum diimplementasikan. Schema awal hanya `campuses`, `users`, dan `tenants`. Jangan menganggap modul kosong sebagai fitur selesai. Perbarui catatan ini saat implementasi bertambah.
+Fondasi health telah dilengkapi implementasi OTP/sesi melalui port delivery, verifikasi kampus terpisah, permission granular/membership, wallet/ledger double-entry, audit immutable, serta outbox/notifikasi dalam aplikasi. Adapter OTP default menolak pengiriman; pengiriman eksternal dan uang nyata belum aktif. Order, katalog/availability, top-up/refund, settlement/payout, review/risk dan reporting masih dikerjakan bertahap; jangan menganggap modul scaffold sebagai fitur selesai. Lihat status dan bukti terbaru pada `docs/BACKEND-BACKLOG.md`; keputusan pilot yang didelegasikan pengguna ada di `docs/PILOT-POLICY.md`.
 
 ## Cara mengerjakan perubahan
 
@@ -74,7 +74,7 @@ Saat panduan ini dibuat, hanya endpoint health yang aktif. Modul bisnis sudah te
 - Gunakan transactional outbox untuk publikasi event yang harus konsisten dengan commit database.
 - Verifikasi signature webhook dan korelasikan reference, currency, amount dan state sebelum mengubah data.
 - Gunakan provider sandbox atau stub terkontrol untuk pengujian; jangan memakai transaksi uang nyata sebagai pemeriksaan rutin.
-- Worker fondasi hanya mendukung job probe `maintenance/healthcheck`; implementasikan job bisnis beserta validasi payload dan penanganan kegagalannya saat fitur dibuat.
+- Worker mendukung probe `maintenance/healthcheck` dan `domain-events/deliver` untuk notifikasi dalam aplikasi, dengan payload tervalidasi dan deduplikasi PostgreSQL. Delivery OTP memiliki outbox tersendiri; jangan menganggap provider atau dispatcher OTP aktif sebelum integrasinya dibuktikan. Implementasikan job bisnis tambahan beserta penanganan kegagalannya saat fitur dibuat.
 
 ## Menjalankan dan memeriksa
 

@@ -1,7 +1,12 @@
 import 'reflect-metadata';
 import { after, before, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { BadRequestException, Controller, Get } from '@nestjs/common';
+import {
+  BadRequestException,
+  Controller,
+  Get,
+  HttpException,
+} from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import {
   FastifyAdapter,
@@ -11,6 +16,17 @@ import { ApiExceptionFilter } from '../src/common/api-exception.filter';
 
 @Controller('errors')
 class ErrorController {
+  @Get('rate')
+  rateFailure() {
+    throw new HttpException(
+      {
+        code: 'otp_locked',
+        message: 'Wait before retrying',
+        retryAfterSeconds: 60,
+      },
+      429,
+    );
+  }
   @Get('private')
   privateFailure() {
     throw new Error('private-database-connection-secret');
@@ -60,5 +76,15 @@ describe('Safe API error contract', () => {
     assert.deepEqual(response.json().error.details, [
       'amount must be a string',
     ]);
+  });
+  it('preserves domain codes and provides bounded retry instructions', async () => {
+    const response = await app.inject({
+      method: 'GET',
+      url: '/v1/errors/rate',
+    });
+    assert.equal(response.statusCode, 429);
+    assert.equal(response.json().error.code, 'otp_locked');
+    assert.equal(response.json().error.retry_after_seconds, 60);
+    assert.equal(response.headers['retry-after'], '60');
   });
 });

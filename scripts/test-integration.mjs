@@ -49,7 +49,15 @@ try {
       '-p',
       '127.0.0.1::5432',
     ],
-    ['pg_isready', '-U', 'antriin_test', '-d', 'antriin_test'],
+    [
+      'pg_isready',
+      '-h',
+      '127.0.0.1',
+      '-U',
+      'antriin_test',
+      '-d',
+      'antriin_test',
+    ],
   );
   const redis = await start(
     'redis',

@@ -47,7 +47,7 @@ API dan worker menggunakan image yang sama dengan entry point terpisah. Compose 
 
 ## Database
 
-Skema awal mencakup `campuses`, `users`, dan `tenants` dengan UUID, timestamp UTC, FK, indeks dan constraints status. Ini fondasi, belum keseluruhan schema produk. Update `updated_at` secara eksplisit di mutation aplikasi; kolom tersebut belum memakai trigger.
+Skema mencakup fondasi kampus/user/tenant, OTP/sesi/verifikasi kampus, membership/permission, ledger/wallet, outbox/notifikasi dan audit. Migrasi menyertakan FK/check/unique serta trigger khusus untuk immutable ledger, proyeksi saldo, dan audit. Ini belum keseluruhan schema produk. Update `updated_at` secara eksplisit di mutation aplikasi kecuali tabel yang secara khusus memiliki trigger.
 
 ```sh
 # Setelah mengubah src/database/schema:
@@ -75,9 +75,11 @@ src/
   worker.ts           Worker bootstrap
 ```
 
-Modul domain telah diregistrasi sebagai scaffold. Auth/OTP, RBAC, order, saldo/ledger, top-up, refund, payout, AI dan notifikasi bisnis **belum diimplementasikan**. Endpoint aktif hanya health; konfigurasi bearer authentication akan ditambahkan bersama modul auth. Worker hanya menerima job probe `maintenance/healthcheck` dan menolak nama job lain; belum memproses uang atau pesanan. Queue producer dapat mengimpor `JobsModule` ketika fitur terkait mulai dibuat.
+Implementasi tersedia untuk [OTP/sesi dan verifikasi kampus](docs/AUTH.md), [permission dan staf tenant](docs/ACCESS.md), [wallet/ledger](docs/LEDGER.md), [outbox/notifikasi dalam aplikasi](docs/OUTBOX.md), serta [audit kampus](docs/AUDIT.md). Bearer opaque diperiksa terhadap sesi dan status user di PostgreSQL. Adapter OTP default mengembalikan 503; pengujian auth memakai port delivery terkontrol, bukan WhatsApp/email nyata. Wallet publik hanya membaca saldo/transaksi milik sesi; tidak ada endpoint kredit/debit bebas.
 
-Log menggunakan JSON Pino dengan redaksi authorization/cookie. Jangan menambahkan OTP, token, payload provider atau data rekening mentah ke log. Request ID log disediakan Pino; idempotency, outbox dan standar respons domain mengikuti tahap implementasi berikutnya.
+Katalog/availability, order, top-up/refund, settlement/payout, review/risk dan reporting masih bertahap, belum dinyatakan siap. Worker menerima `maintenance/healthcheck` serta `domain-events/deliver` untuk notifikasi dalam aplikasi; belum memproses uang/pesanan atau mengirim pesan eksternal. Status implementasi dan bukti checkpoint ada pada [backlog backend](docs/BACKEND-BACKLOG.md).
+
+Log menggunakan JSON Pino dengan redaksi authorization/cookie. Jangan menambahkan OTP, token, payload provider atau data rekening mentah ke log. Request ID log disediakan Pino; ledger dan outbox memiliki deduplikasi/idempotency masing-masing, dan mutasi domain berikutnya tetap harus menjaga idempotency pada operasinya sendiri.
 
 ## Pemeriksaan
 

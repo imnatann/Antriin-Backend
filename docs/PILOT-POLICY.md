@@ -4,7 +4,7 @@ Pada 12 November 2026 pengguna mendelegasikan pemilihan kebijakan awal kepada ro
 
 ## Transaksi
 
-- Currency awal IDR, nominal integer satuan terkecil, ditransmisikan sebagai string desimal; tidak ada floating point uang.
+- Currency awal IDR. Pada kontrak pilot, `amountMinor`/harga menggunakan rupiah bulat (eksponen 0) yang ditransmisikan sebagai string desimal; tidak ada floating point uang. Adapter production harus mengonversi secara eksplisit bila kontrak provider memakai representasi berbeda.
 - Checkout satu tenant, satu slot, harga dan opsi dihitung ulang server. Kapasitas direservasi saat pembayaran wallet atomik, bukan saat quote. Quote tidak menjamin harga atau slot.
 - Pilot tidak memungut komisi/fee platform atau pajak tambahan. Ini bukan pernyataan pajak atau biaya provider tidak berlaku. Biaya provider nyata dan kewajiban pajak harus dikonfigurasi sesuai kontrak sebelum aktivasi production.
 - Dana pembayaran ditahan terpisah dari payable tenant. Release hanya setelah handover selesai dan tidak ada kasus operasional terbuka. Tidak ada release dari sekadar pembayaran sukses.
@@ -16,6 +16,7 @@ Pada 12 November 2026 pengguna mendelegasikan pemilihan kebijakan awal kepada ro
 ## Keamanan dan operasional
 
 - OTP pilot berlaku 300 detik, maksimum lima percobaan, cooldown kirim ulang 60 detik; sesi maksimal 24 jam dengan refresh merotasi token. Nilai ini konfigurasi keamanan pilot dan bukan klaim kebijakan prototype.
+- Verifikasi email kampus juga dapat menautkan email yang telah dibuktikan melalui OTP sebagai identifier login pada akun yang sama; konflik kepemilikan ditolak. Login tetap memakai challenge login baru, dan hanya challenge verifikasi kampus yang menghasilkan claim kelayakan ulasan. Ini keputusan pilot eksplisit, bukan kesamaan otomatis kedua tujuan OTP.
 - Provider delivery/QRIS/refund/payout/notifikasi disediakan melalui port yang dapat diuji. Stub terkontrol tidak mengirim OTP atau uang nyata, tidak mengembalikan OTP melalui API, dan tidak diizinkan di production.
 - Endpoint webhook sandbox memerlukan autentikasi/signature tersendiri, reference, amount, currency dan state yang cocok. Tidak menerima instruksi saldo atau status dari buyer.
 - Tidak ada auto-sanction dari skor risiko. Threshold pilot yang dipilih kelak hanya menambah antrean tinjauan dengan versi dan bukti, bukan mengubah order/saldo/akses.
