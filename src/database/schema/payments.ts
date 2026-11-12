@@ -27,6 +27,12 @@ export const topupIntents = pgTable(
     currency: varchar('currency', { length: 3 }).notNull(),
     status: varchar('status', { length: 24 }).default('pending').notNull(),
     statusVersion: integer('status_version').default(1).notNull(),
+    // R1-08 (migration 0007): lifecycle timestamps required by REQUIREMENTS
+    // §7.2 (`topups.expires_at`, `succeeded_at`). Nullable so the change is
+    // additive for code written against schema 0006; the CHECKs below only
+    // bind once a value is present.
+    expiresAt: timestamp('expires_at', { withTimezone: true }),
+    succeededAt: timestamp('succeeded_at', { withTimezone: true }),
     createdAt: timestamp('created_at', { withTimezone: true })
       .defaultNow()
       .notNull(),
@@ -63,6 +69,16 @@ export const topupIntents = pgTable(
       sql`${table.status} in ('pending', 'succeeded', 'failed', 'expired', 'needs_assistance')`,
     ),
     check('topup_intents_version_check', sql`${table.statusVersion} > 0`),
+    // R1-08: expiry must be in the future relative to creation when set.
+    check(
+      'topup_intents_expires_at_check',
+      sql`${table.expiresAt} is null or ${table.expiresAt} > ${table.createdAt}`,
+    ),
+    // R1-08: succeeded_at may only be populated for the succeeded status.
+    check(
+      'topup_intents_succeeded_at_check',
+      sql`${table.succeededAt} is null or ${table.status} = 'succeeded'`,
+    ),
     foreignKey({
       name: 'topup_intents_user_fk',
       columns: [table.userId],
@@ -72,6 +88,14 @@ export const topupIntents = pgTable(
       name: 'topup_intents_wallet_account_fk',
       columns: [table.walletAccountId],
       foreignColumns: [walletAccounts.id],
+    }).onDelete('restrict'),
+    // R1-04 (migration 0007): the credited wallet must belong to the top-up
+    // user. Requires UNIQUE(owner_user_id, id) on wallet_accounts
+    // (`wallet_accounts_owner_id_uq`).
+    foreignKey({
+      name: 'topup_intents_user_wallet_fk',
+      columns: [table.userId, table.walletAccountId],
+      foreignColumns: [walletAccounts.ownerUserId, walletAccounts.id],
     }).onDelete('restrict'),
   ],
 );

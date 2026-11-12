@@ -8,6 +8,7 @@ import {
   integer,
   numeric,
   pgTable,
+  primaryKey,
   time,
   timestamp,
   unique,
@@ -15,7 +16,7 @@ import {
   uuid,
   varchar,
 } from 'drizzle-orm/pg-core';
-import { tenants } from './index';
+import { orders, tenants } from './index';
 
 const timestamps = () => ({
   createdAt: timestamp('created_at', { withTimezone: true })
@@ -66,6 +67,10 @@ export const menuItems = pgTable(
     currency: varchar('currency', { length: 3 }).default('IDR').notNull(),
     status: varchar('status', { length: 16 }).default('active').notNull(),
     version: integer('version').default(1).notNull(),
+    // R1-11 (migration 0007): optional photo reference and archive timestamp
+    // (REQUIREMENTS §7.2 `menu_items.image_ref`, `archived_at`).
+    imageRef: varchar('image_ref', { length: 500 }),
+    archivedAt: timestamp('archived_at', { withTimezone: true }),
     ...timestamps(),
   },
   (t) => [
@@ -87,6 +92,12 @@ export const menuItems = pgTable(
       sql`${t.status} in ('active', 'sold_out', 'archived')`,
     ),
     check('menu_items_version_check', sql`${t.version} > 0`),
+    // R1-11 (root directive): archived_at is set exactly for archived items;
+    // reactivating an item must clear archived_at.
+    check(
+      'menu_items_archived_at_check',
+      sql`(${t.status} = 'archived' and ${t.archivedAt} is not null) or (${t.status} <> 'archived' and ${t.archivedAt} is null)`,
+    ),
   ],
 );
 
@@ -163,6 +174,15 @@ export const menuOptionChoices = pgTable(
   ],
 );
 
+/**
+ * Weekly tenant operating hours.
+ *
+ * Weekday convention (root decision D12.9, binding): `weekday` uses
+ * 0 = Sunday ... 6 = Saturday, matching JavaScript `Date.getDay()`, and is
+ * evaluated in the tenant/campus IANA timezone - never in UTC. Midnight-
+ * crossing windows remain unsupported in the pilot (`opens_at < closes_at`).
+ * The same convention applies to `tenant_operating_hour_overrides.local_date`.
+ */
 export const tenantOperatingHours = pgTable(
   'tenant_operating_hours',
   {
@@ -173,11 +193,22 @@ export const tenantOperatingHours = pgTable(
     opensAt: time('opens_at'),
     closesAt: time('closes_at'),
     isOpen: boolean('is_open').default(true).notNull(),
+    // R1-17 (migration 0007): created_at with a safe default (additive).
+    createdAt: timestamp('created_at', { withTimezone: true })
+      .defaultNow()
+      .notNull(),
     updatedAt: timestamp('updated_at', { withTimezone: true })
       .defaultNow()
       .notNull(),
   },
   (t) => [
+    // R1-17: real PRIMARY KEY constraint (was unique index only). The legacy
+    // unique index is kept (additive migration); the PK backs replication and
+    // tooling that require a primary key.
+    primaryKey({
+      columns: [t.tenantId, t.weekday],
+      name: 'tenant_operating_hours_pk',
+    }),
     uniqueIndex('tenant_operating_hours_tenant_weekday_uq').on(
       t.tenantId,
       t.weekday,
@@ -193,6 +224,13 @@ export const tenantOperatingHours = pgTable(
   ],
 );
 
+/**
+ * Per-date tenant operating hour overrides; an override beats the weekly
+ * schedule (see TenantOperatingHoursService.resolveOperatingWindow, D8).
+ * `local_date` is a tenant/campus local calendar date ('YYYY-MM-DD'); the
+ * weekday convention of `tenant_operating_hours` (0 = Sunday ... 6 = Saturday,
+ * D12.9) applies when deriving the weekday from it.
+ */
 export const tenantOperatingHourOverrides = pgTable(
   'tenant_operating_hour_overrides',
   {
@@ -204,11 +242,21 @@ export const tenantOperatingHourOverrides = pgTable(
     opensAt: time('opens_at'),
     closesAt: time('closes_at'),
     reason: varchar('reason', { length: 300 }).notNull().default(''),
+    // R1-17 (migration 0007): created_at with a safe default (additive).
+    createdAt: timestamp('created_at', { withTimezone: true })
+      .defaultNow()
+      .notNull(),
     updatedAt: timestamp('updated_at', { withTimezone: true })
       .defaultNow()
       .notNull(),
   },
   (t) => [
+    // R1-17: real PRIMARY KEY constraint (was unique index only); the legacy
+    // unique index is kept because migration 0007 is strictly additive.
+    primaryKey({
+      columns: [t.tenantId, t.localDate],
+      name: 'tenant_operating_hour_overrides_pk',
+    }),
     uniqueIndex('tenant_operating_overrides_tenant_date_uq').on(
       t.tenantId,
       t.localDate,
@@ -269,6 +317,12 @@ export const slotReservations = pgTable(
       .defaultNow()
       .notNull(),
     releasedAt: timestamp('released_at', { withTimezone: true }),
+    // R1-13 (migration 0007): consume timestamp (symmetry with released_at)
+    // and updated_at (set explicitly by the application; AGENTS.md).
+    consumedAt: timestamp('consumed_at', { withTimezone: true }),
+    updatedAt: timestamp('updated_at', { withTimezone: true })
+      .defaultNow()
+      .notNull(),
   },
   (t) => [
     uniqueIndex('slot_reservations_order_unique').on(t.orderId),
@@ -276,6 +330,13 @@ export const slotReservations = pgTable(
       columns: [t.tenantId, t.slotId],
       foreignColumns: [pickupSlots.tenantId, pickupSlots.id],
       name: 'slot_reservations_tenant_slot_fk',
+    }).onDelete('restrict'),
+    // R1-02 (migration 0007): a reservation must reference a real order; the
+    // capacity hold stays referentially auditable (ON DELETE RESTRICT).
+    foreignKey({
+      columns: [t.orderId],
+      foreignColumns: [orders.id],
+      name: 'slot_reservations_order_fk',
     }).onDelete('restrict'),
     index('slot_reservations_tenant_slot_status_idx').on(
       t.tenantId,
@@ -289,6 +350,12 @@ export const slotReservations = pgTable(
     check(
       'slot_reservations_released_at_check',
       sql`(${t.status} = 'released' and ${t.releasedAt} is not null) or (${t.status} <> 'released' and ${t.releasedAt} is null)`,
+    ),
+    // R1-13 (D12): consumed_at mirrors the released_at pattern - it is set
+    // exactly for consumed reservations.
+    check(
+      'slot_reservations_consumed_at_check',
+      sql`(${t.status} = 'consumed' and ${t.consumedAt} is not null) or (${t.status} <> 'consumed' and ${t.consumedAt} is null)`,
     ),
   ],
 );

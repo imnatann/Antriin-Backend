@@ -87,6 +87,12 @@ export const environmentSchema = Joi.object({
     .min(Joi.ref('PAYMENTS_TOPUP_MIN_MINOR'))
     .max(100000000)
     .default(2000000),
+  // Sandbox top-up intent lifetime; expiry is informational (no sweeper yet).
+  PAYMENTS_SANDBOX_TOPUP_TTL_SECONDS: Joi.number()
+    .integer()
+    .min(60)
+    .max(86400)
+    .default(3600),
   PAYMENTS_SANDBOX_WEBHOOK_SECRET: Joi.when('PAYMENTS_PROVIDER_MODE', {
     is: 'sandbox',
     then: Joi.string().min(32).required(),

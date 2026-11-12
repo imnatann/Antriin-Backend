@@ -1,6 +1,7 @@
 import { sql } from 'drizzle-orm';
 import {
   check,
+  foreignKey,
   index,
   integer,
   jsonb,
@@ -8,11 +9,12 @@ import {
   pgTable,
   text,
   timestamp,
+  unique,
   uniqueIndex,
   uuid,
   varchar,
 } from 'drizzle-orm/pg-core';
-import { tenants, users } from './index';
+import { pickupSlots, tenants, users } from './index';
 import { ledgerTransactions } from './wallet';
 
 const timestamps = () => ({
@@ -35,6 +37,11 @@ export const orders = pgTable(
       .notNull()
       .references(() => tenants.id, { onDelete: 'restrict' }),
     pickupSlotId: uuid('pickup_slot_id').notNull(),
+    // R1-10 (migration 0007): public display number. Nullable for now because
+    // 0007 must stay additive on tables that may hold rows; wave 2 generates
+    // it (collision-safe retry on unique violation) and a later migration
+    // promotes it to NOT NULL (D12.4 end state).
+    orderNumber: varchar('order_number', { length: 32 }),
     tenantNameSnapshot: varchar('tenant_name_snapshot', {
       length: 200,
     }).notNull(),
@@ -55,13 +62,30 @@ export const orders = pgTable(
       .default('')
       .notNull(),
     version: integer('version').default(1).notNull(),
+    // R1-05/R1-10 (migration 0007): transition timestamps from REQUIREMENTS
+    // §7.2. paid_at is set by checkout (payment precedes order creation);
+    // cancelled_at/declined_at record terminal transitions.
+    paidAt: timestamp('paid_at', { withTimezone: true }),
     confirmedAt: timestamp('confirmed_at', { withTimezone: true }),
     preparingAt: timestamp('preparing_at', { withTimezone: true }),
     readyAt: timestamp('ready_at', { withTimezone: true }),
     completedAt: timestamp('completed_at', { withTimezone: true }),
+    cancelledAt: timestamp('cancelled_at', { withTimezone: true }),
+    declinedAt: timestamp('declined_at', { withTimezone: true }),
     ...timestamps(),
   },
   (table) => [
+    // Composite FK targets (D12.3): real UNIQUE constraints (not unique
+    // indexes) so child tables can reference (tenant_id, id) / (buyer_id, id).
+    unique('orders_tenant_id_id_uq').on(table.tenantId, table.id),
+    unique('orders_buyer_id_id_uq').on(table.buyerId, table.id),
+    // R1-01 (BLOCKER): the chosen slot must exist and belong to the order's
+    // tenant. Requires UNIQUE(tenant_id, id) on pickup_slots (exists, 0006).
+    foreignKey({
+      name: 'orders_tenant_slot_fk',
+      columns: [table.tenantId, table.pickupSlotId],
+      foreignColumns: [pickupSlots.tenantId, pickupSlots.id],
+    }).onDelete('restrict'),
     index('orders_buyer_created_idx').on(table.buyerId, table.createdAt),
     index('orders_tenant_status_pickup_idx').on(
       table.tenantId,
@@ -82,6 +106,37 @@ export const orders = pgTable(
       'orders_pickup_window_check',
       sql`${table.pickupEndsAt} > ${table.pickupStartsAt}`,
     ),
+    // R1-05 (D12.4): status and transition timestamps must agree.
+    // - paid_awaiting_tenant: no production/terminal timestamp yet
+    // - confirmed/preparing/ready_for_pickup: confirmed_at and paid_at set
+    // - completed: additionally ready_at and completed_at set
+    // - cancelled/declined: cancelled_at/declined_at set
+    check(
+      'orders_status_timestamps_check',
+      sql`(${table.status} = 'paid_awaiting_tenant' and ${table.confirmedAt} is null and ${table.preparingAt} is null and ${table.readyAt} is null and ${table.completedAt} is null) or (${table.status} in ('confirmed', 'preparing', 'ready_for_pickup') and ${table.confirmedAt} is not null and ${table.paidAt} is not null) or (${table.status} = 'completed' and ${table.confirmedAt} is not null and ${table.paidAt} is not null and ${table.readyAt} is not null and ${table.completedAt} is not null) or (${table.status} = 'cancelled' and ${table.cancelledAt} is not null) or (${table.status} = 'declined' and ${table.declinedAt} is not null)`,
+    ),
+    // R1-05 (D12.4): timestamps only advance; NULL comparisons yield NULL so
+    // the chain binds only timestamps that are actually set.
+    check(
+      'orders_timestamps_monotonic_check',
+      sql`${table.createdAt} <= ${table.confirmedAt} and ${table.confirmedAt} <= ${table.preparingAt} and ${table.preparingAt} <= ${table.readyAt} and ${table.readyAt} <= ${table.completedAt}`,
+    ),
+    // R1-07 (D12.1): pilot has no fee/tax/discount, so the total equals the
+    // subtotal. Cross-table checks (SUM(line totals), payment amount) are
+    // enforced transactionally in the checkout service + reconciliation tests.
+    check(
+      'orders_total_equals_subtotal_check',
+      sql`${table.totalMinor} = ${table.subtotalMinor}`,
+    ),
+    // R1-07/R1-20 (D12.5): zero-total orders are rejected in the pilot;
+    // an order is only born from a successful wallet payment (> 0).
+    check(
+      'orders_positive_totals_check',
+      sql`${table.subtotalMinor} > 0 and ${table.totalMinor} > 0`,
+    ),
+    // R1-10: uniqueness for the public order number once wave 2 fills it.
+    // A unique INDEX (nullable column): NULLs stay distinct until backfill.
+    uniqueIndex('orders_order_number_uq').on(table.orderNumber),
   ],
 );
 
@@ -101,20 +156,32 @@ export const orderItems = pgTable(
     baseUnitPriceMinor: numeric('base_unit_price_minor').notNull(),
     unitPriceMinor: numeric('unit_price_minor').notNull(),
     lineTotalMinor: numeric('line_total_minor').notNull(),
+    // R1-12 (migration 0007): per-item note snapshot; NOT NULL DEFAULT ''
+    // keeps existing inserts valid.
+    notes: varchar('notes', { length: 500 }).default('').notNull(),
     createdAt: timestamp('created_at', { withTimezone: true })
       .defaultNow()
       .notNull(),
   },
   (table) => [
     index('order_items_order_idx').on(table.orderId, table.createdAt),
+    // R1-22 (D12): loose DB bound 1..999; the operational pilot bound (1..200)
+    // lives in DTO validation so product can change it without a migration.
     check(
       'order_items_quantity_check',
-      sql`${table.quantity} between 1 and 99`,
+      sql`${table.quantity} between 1 and 999`,
     ),
     check('order_items_menu_version_check', sql`${table.menuVersion} > 0`),
     check(
       'order_items_prices_check',
       sql`${table.baseUnitPriceMinor} >= 0 and ${table.unitPriceMinor} >= 0 and ${table.lineTotalMinor} >= 0 and ${table.baseUnitPriceMinor} = trunc(${table.baseUnitPriceMinor}) and ${table.unitPriceMinor} = trunc(${table.unitPriceMinor}) and ${table.lineTotalMinor} = trunc(${table.lineTotalMinor}) and ${table.baseUnitPriceMinor} < 1e38 and ${table.unitPriceMinor} < 1e38 and ${table.lineTotalMinor} < 1e38`,
+    ),
+    // R1-07 (D12.1, locked price formula): line_total = unit_price * quantity.
+    // unit_price itself = base_unit_price + SUM(option deltas per unit),
+    // enforced transactionally in the checkout service (cross-row).
+    check(
+      'order_items_line_total_check',
+      sql`${table.lineTotalMinor} = ${table.unitPriceMinor} * ${table.quantity}`,
     ),
   ],
 );
@@ -199,6 +266,9 @@ export const orderEvents = pgTable(
       onDelete: 'restrict',
     }),
     actorService: varchar('actor_service', { length: 80 }),
+    // R1-15 (migration 0007): optional correlation to the idempotency record
+    // of the request that produced the event (REQUIREMENTS §7.2 request_id).
+    requestId: uuid('request_id'),
     reason: varchar('reason', { length: 500 }).notNull(),
     metadata: jsonb('metadata').default({}).notNull(),
     occurredAt: timestamp('occurred_at', { withTimezone: true })
@@ -212,11 +282,21 @@ export const orderEvents = pgTable(
       table.occurredAt,
       table.id,
     ),
+    // R1-15: correlation lookup per order/request.
+    index('order_events_order_request_idx').on(table.orderId, table.requestId),
     check('order_events_version_check', sql`${table.version} > 0`),
+    // R1-15 (D12.7): closed enum widened from 4 to 8 lifecycle event types.
     check(
       'order_events_type_check',
-      sql`${table.eventType} in ('order.created', 'order.status_changed', 'schedule_proposal.created', 'schedule_proposal.decided')`,
+      sql`${table.eventType} in ('order.created', 'order.status_changed', 'order.cancelled', 'order.declined', 'schedule_proposal.created', 'schedule_proposal.decided', 'pickup_credential.issued', 'pickup_credential.revoked')`,
     ),
+    // R1-15: request_id, when present, must reference a real idempotency
+    // record (resolved lazily; orderRequestIdempotency is declared below).
+    foreignKey({
+      name: 'order_events_request_fk',
+      columns: [table.requestId],
+      foreignColumns: [orderRequestIdempotency.id],
+    }).onDelete('restrict'),
     check(
       'order_events_actor_check',
       sql`(${table.actorUserId} is not null and ${table.actorService} is null) or (${table.actorUserId} is null and ${table.actorService} is not null)`,
@@ -238,6 +318,9 @@ export const orderRequestIdempotency = pgTable(
       .notNull()
       .references(() => orders.id, { onDelete: 'restrict' }),
     responseBody: jsonb('response_body').notNull(),
+    // R1-16 (migration 0007): retention expiry for the cleanup job (wave
+    // operasional); nullable so records may opt out of expiry for now.
+    expiresAt: timestamp('expires_at', { withTimezone: true }),
     createdAt: timestamp('created_at', { withTimezone: true })
       .defaultNow()
       .notNull(),
@@ -249,6 +332,10 @@ export const orderRequestIdempotency = pgTable(
       table.keyHash,
     ),
     index('order_request_idempotency_order_idx').on(table.orderId),
+    // R1-16: partial index for the retention cleanup scan.
+    index('order_request_idempotency_expires_idx')
+      .on(table.expiresAt)
+      .where(sql`${table.expiresAt} is not null`),
     check(
       'order_request_idempotency_hashes_check',
       sql`${table.keyHash} ~ '^[a-f0-9]{64}$' and ${table.requestHash} ~ '^[a-f0-9]{64}$'`,
@@ -317,6 +404,36 @@ export const scheduleProposals = pgTable(
       'schedule_proposals_versions_check',
       sql`${table.expectedSlotVersion} > 0 and ${table.expectedOrderVersion} > 0`,
     ),
+    // R1-06 (D12): a proposal must expire strictly after it was created.
+    check(
+      'schedule_proposals_expires_at_check',
+      sql`${table.expiresAt} > ${table.createdAt}`,
+    ),
+    // R1-06 (D12): decided_at is set exactly once the proposal left
+    // pending_buyer (accepted/rejected/expired/cancelled are decisions;
+    // timeout expiry must never read as acceptance - AGENTS.md).
+    check(
+      'schedule_proposals_decided_at_check',
+      sql`(${table.status} = 'pending_buyer' and ${table.decidedAt} is null) or (${table.status} <> 'pending_buyer' and ${table.decidedAt} is not null)`,
+    ),
+    // R1-03 (migration 0007): proposals stay inside the order's tenant and
+    // both slots must belong to that tenant (old_slot_id is NOT NULL here, so
+    // the composite FK always applies).
+    foreignKey({
+      name: 'schedule_proposals_tenant_order_fk',
+      columns: [table.tenantId, table.orderId],
+      foreignColumns: [orders.tenantId, orders.id],
+    }).onDelete('restrict'),
+    foreignKey({
+      name: 'schedule_proposals_tenant_proposed_slot_fk',
+      columns: [table.tenantId, table.proposedSlotId],
+      foreignColumns: [pickupSlots.tenantId, pickupSlots.id],
+    }).onDelete('restrict'),
+    foreignKey({
+      name: 'schedule_proposals_tenant_old_slot_fk',
+      columns: [table.tenantId, table.oldSlotId],
+      foreignColumns: [pickupSlots.tenantId, pickupSlots.id],
+    }).onDelete('restrict'),
   ],
 );
 
@@ -335,6 +452,9 @@ export const pickupCredentials = pgTable(
     ...timestamps(),
   },
   (table) => [
+    // Composite FK target (D12.3): real UNIQUE constraint so
+    // `order_handovers_order_credential_fk` can reference (order_id, id).
+    unique('pickup_credentials_order_id_id_uq').on(table.orderId, table.id),
     uniqueIndex('pickup_credentials_one_current_order_unique')
       .on(table.orderId)
       .where(sql`${table.revokedAt} is null`),
@@ -342,6 +462,17 @@ export const pickupCredentials = pgTable(
     check(
       'pickup_credentials_hash_check',
       sql`${table.codeHash} ~ '^[a-f0-9]{64}$'`,
+    ),
+    // R1-14 (D12): expiry must be in the future relative to creation.
+    check(
+      'pickup_credentials_expires_at_check',
+      sql`${table.expiresAt} > ${table.createdAt}`,
+    ),
+    // R1-14 (D12): a credential is either consumed or revoked, never both
+    // (rotation replaces: old credential revoked, one active per order).
+    check(
+      'pickup_credentials_consume_revoke_check',
+      sql`${table.consumedAt} is null or ${table.revokedAt} is null`,
     ),
   ],
 );
@@ -373,5 +504,18 @@ export const orderHandovers = pgTable(
       table.tenantId,
       table.handedOverAt,
     ),
+    // R1-03 (migration 0007): the handover must belong to the order's tenant
+    // and the credential must belong to the SAME order (pickup validation is
+    // enforced for the right order and tenant - AGENTS.md).
+    foreignKey({
+      name: 'order_handovers_tenant_order_fk',
+      columns: [table.tenantId, table.orderId],
+      foreignColumns: [orders.tenantId, orders.id],
+    }).onDelete('restrict'),
+    foreignKey({
+      name: 'order_handovers_order_credential_fk',
+      columns: [table.orderId, table.credentialId],
+      foreignColumns: [pickupCredentials.orderId, pickupCredentials.id],
+    }).onDelete('restrict'),
   ],
 );
