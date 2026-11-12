@@ -1220,10 +1220,9 @@ async function countOrders(pool: Pool, buyerId: string): Promise<number> {
 /**
  * R2-02: availability maps database rejections to stable 409 contract codes
  * (DATABASE_DEADLOCK / REFERENCE_CONFLICT / CHECK_CONSTRAINT_VIOLATION /
- * SLOT_WINDOW_CONFLICT / RESERVATION_IN_PROGRESS). The strict code assertion
- * activates as soon as availability attaches the code; until then the mapped
- * ConflictException carries only a message, which is tolerated here but never a
- * different code and never a non-Conflict error.
+ * SLOT_WINDOW_CONFLICT / RESERVATION_IN_PROGRESS). The code is part of the
+ * contract, so it is asserted strictly: a mapped error must never surface as a
+ * 500, and must never carry a different code than the agreed one.
  */
 function assertMappedConflict(error: unknown, expected: string): void {
   assert.ok(
@@ -1231,9 +1230,11 @@ function assertMappedConflict(error: unknown, expected: string): void {
     `expected ConflictException, got: ${String(error)}`,
   );
   const body: unknown = (error as ConflictException).getResponse();
-  if (typeof body === 'object' && body !== null && 'code' in body) {
-    assert.equal((body as { code?: string }).code, expected);
-  }
+  assert.ok(
+    typeof body === 'object' && body !== null && 'code' in body,
+    `expected a stable contract code on the mapped 409, got: ${JSON.stringify(body)}`,
+  );
+  assert.equal((body as { code?: string }).code, expected);
 }
 
 function sqlState(code: string) {
