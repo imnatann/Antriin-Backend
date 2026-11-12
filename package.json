@@ -1,0 +1,63 @@
+{
+  "name": "antriin-backend",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Antriin API and background worker",
+  "license": "UNLICENSED",
+  "engines": {
+    "node": ">=24 <25"
+  },
+  "scripts": {
+    "build": "nest build",
+    "start": "node dist/main.js",
+    "start:dev": "nest start --watch",
+    "start:worker": "node dist/worker.js",
+    "start:worker:dev": "nest start --watch --entryFile worker",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "test": "tsc -p tsconfig.test.json && node --test .test-dist/test/*.spec.js",
+    "db:generate": "drizzle-kit generate",
+    "db:migrate": "drizzle-kit migrate",
+    "db:studio": "drizzle-kit studio",
+    "infra:up": "docker compose up -d postgres redis",
+    "infra:down": "docker compose down"
+  },
+  "dependencies": {
+    "@fastify/helmet": "^13.2.0",
+    "@fastify/static": "^10.1.10",
+    "@nestjs/bullmq": "^12.0.1",
+    "@nestjs/common": "^12.4.2",
+    "@nestjs/config": "^12.1.1",
+    "@nestjs/core": "^12.4.2",
+    "@nestjs/platform-fastify": "^12.4.2",
+    "@nestjs/swagger": "^12.1.1",
+    "bullmq": "^6.7.5",
+    "class-transformer": "^0.5.1",
+    "class-validator": "^0.15.1",
+    "dotenv": "^18.0.10",
+    "drizzle-orm": "^0.45.4",
+    "fastify": "^5.12.8",
+    "ioredis": "^6.0.0",
+    "joi": "^18.3.2",
+    "nestjs-pino": "^5.3.1",
+    "pg": "^8.23.1",
+    "pino": "^10.4.0",
+    "pino-http": "^11.0.0",
+    "reflect-metadata": "^0.2.2",
+    "rxjs": "^7.8.2"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@nestjs/cli": "^12.0.12",
+    "@nestjs/testing": "^12.4.2",
+    "@types/node": "^24.19.2",
+    "@types/pg": "^8.23.1",
+    "drizzle-kit": "^0.31.11",
+    "eslint": "^10.14.0",
+    "prettier": "^3.10.0",
+    "typescript": "^6.0.3",
+    "typescript-eslint": "^8.72.2"
+  }
+}

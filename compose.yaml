@@ -1,0 +1,59 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: antriin
+      POSTGRES_PASSWORD: antriin_local_only
+      POSTGRES_DB: antriin
+    ports: ['127.0.0.1:5433:5432']
+    volumes: ['postgres_data:/var/lib/postgresql/data']
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U antriin -d antriin']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+  redis:
+    image: redis:7-alpine
+    command:
+      [
+        'redis-server',
+        '--appendonly',
+        'yes',
+        '--maxmemory-policy',
+        'noeviction',
+      ]
+    ports: ['127.0.0.1:6380:6379']
+    volumes: ['redis_data:/data']
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+  api:
+    profiles: ['app']
+    build: .
+    env_file: .env
+    environment:
+      HOST: 0.0.0.0
+      DATABASE_URL: postgresql://antriin:antriin_local_only@postgres:5432/antriin
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+    ports: ['127.0.0.1:3000:3000']
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+  worker:
+    profiles: ['app']
+    build: .
+    command: ['node', 'dist/worker.js']
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://antriin:antriin_local_only@postgres:5432/antriin
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+volumes:
+  postgres_data:
+  redis_data:

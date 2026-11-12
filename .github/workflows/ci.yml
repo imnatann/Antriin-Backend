@@ -1,0 +1,55 @@
+name: CI
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: antriin
+          POSTGRES_PASSWORD: ci_only
+          POSTGRES_DB: antriin
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U antriin -d antriin"
+          --health-interval 5s --health-timeout 3s --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports: ['6379:6379']
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s --health-timeout 3s --health-retries 10
+    env:
+      NODE_ENV: test
+      DATABASE_URL: postgresql://antriin:ci_only@127.0.0.1:5432/antriin
+      REDIS_HOST: 127.0.0.1
+      REDIS_PORT: 6379
+      CORS_ORIGINS: http://localhost:3001
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run lint
+      - run: npm run format:check
+      - run: npm test
+      - run: npm run build
+      - run: npm run db:migrate
+      - name: Probe application readiness
+        shell: bash
+        run: |
+          npm start > /tmp/antriin-api.log 2>&1 &
+          api_pid=$!
+          trap 'kill "$api_pid" 2>/dev/null || true' EXIT
+          for attempt in {1..20}; do
+            if curl --fail --silent http://127.0.0.1:3000/v1/health/ready; then exit 0; fi
+            sleep 1
+          done
+          cat /tmp/antriin-api.log
+          exit 1

@@ -1,0 +1,7 @@
+node_modules
+dist
+coverage
+package-lock.json
+drizzle
+docs/REQUIREMENTS-API.md
+.test-dist/
