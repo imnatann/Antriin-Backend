@@ -18,6 +18,24 @@ Pemeriksaan checkpoint: `npm run test:integration` telah menerapkan migrasi dari
 
 `.env` lokal tidak diubah dan tidak dipakai sebagai target migrasi. Container uji menggunakan nama unik, port loopback dan data sementara; runner membersihkan hanya container miliknya. Uji provider memakai port terkontrol; ini bukan bukti pengiriman WhatsApp/email, QRIS nyata, refund bank atau payout production.
 
+## Status implementasi 12 November 2026 (sesi orkestrasi DSH)
+
+Ringkasan keadaan nyata setelah wave 1, wave 2a dan pickup. Bukti terakhir: `npm run test:integration` menerapkan migrasi `0000..0008` pada PostgreSQL baru dan menjalankan **231/231 tes** dengan Redis/BullMQ nyata, tanpa skip; typecheck, lint, format dan build lulus.
+
+| Slice                                 | Commit    | Bukti                                                                                                    |
+| ------------------------------------- | --------- | -------------------------------------------------------------------------------------------------------- |
+| Schema 0006 (katalog/order/payment)   | `3c72799` | 39 tabel, 54 FK; 44/44 tes baseline                                                                      |
+| Schema 0007 (integritas hasil review) | `52fbf75` | 9 FK, 4 UNIQUE, 2 PK, 15 kolom, 15 CHECK; 15/15 tes integritas + 40/40 regresi                           |
+| Wave 1 + orders                       | `e677798` | katalog, availability, tenant/kampus, payments, checkout/proposal; 189/189                               |
+| Schema 0008 (kasus/refund)            | `7203b30` | 4 tabel + dedupe provider refund; 43 tabel, 80 FK                                                        |
+| Perbaikan review wave 1               | `56b4d1d` | deadlock katalog, kode kontrak error, audit slot, retry orders, write-skew, liveness dispatcher payments |
+| Pickup                                | `0e35827` | kredensial hash + handover sekali; 11 tes PostgreSQL                                                     |
+| Ketegasan kontrak retry orders        | `c71ab28` | 16/16 tes checkout                                                                                       |
+
+Laporan review independen tersimpan di [reviews/](reviews/): `schema-wave1.md` (1 blocker/7 major), `schema-0007.md` (implementasi), `wave1-catalog-availability.md` (1 blocker/2 major/9 minor), `wave1-payments-tenant.md` (0 blocker/1 major/8 minor). Keputusan lintas slice yang mengikat ada di [reviews/wave1-decisions.md](reviews/wave1-decisions.md) D1–D17.
+
+Belum selesai: refunds/cases (sedang dikerjakan), settlement/payout, review/risk/reporting, profil `/me`, dan dispatcher OTP eksternal. Semua provider eksternal tetap sandbox/stub; tidak ada uang nyata, deployment, atau migrasi produksi yang diklaim.
+
 ## Paket kerja dan Jira
 
 | Paket                                  | Tiket backend                                                                                                                                  | Status implementasi                                                                    |
