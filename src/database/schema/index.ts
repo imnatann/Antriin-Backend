@@ -79,3 +79,6 @@ export * from './auth';
 export * from './events';
 export * from './wallet';
 export * from './audit';
+export * from './catalog';
+export * from './orders';
+export * from './payments';

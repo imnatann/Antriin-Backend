@@ -43,6 +43,13 @@
       "when": 1794446529272,
       "tag": "0005_audit_retention",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1794465209055,
+      "tag": "0006_fancy_white_queen",
+      "breakpoints": true
     }
   ]
 }

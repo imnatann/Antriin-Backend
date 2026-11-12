@@ -10,6 +10,7 @@ import {
   pgTable,
   time,
   timestamp,
+  unique,
   uniqueIndex,
   uuid,
   varchar,
@@ -38,7 +39,9 @@ export const menuCategories = pgTable(
     ...timestamps(),
   },
   (t) => [
-    uniqueIndex('menu_categories_tenant_id_id_uq').on(t.tenantId, t.id),
+    // Composite FK target: must be a real UNIQUE constraint, created with the
+    // table, so `menu_items_tenant_category_fk` can reference (tenant_id, id).
+    unique('menu_categories_tenant_id_id_uq').on(t.tenantId, t.id),
     uniqueIndex('menu_categories_tenant_name_uq').on(t.tenantId, t.name),
     index('menu_categories_tenant_status_idx').on(t.tenantId, t.status),
     check(
@@ -66,7 +69,7 @@ export const menuItems = pgTable(
     ...timestamps(),
   },
   (t) => [
-    uniqueIndex('menu_items_tenant_id_id_uq').on(t.tenantId, t.id),
+    unique('menu_items_tenant_id_id_uq').on(t.tenantId, t.id),
     foreignKey({
       columns: [t.tenantId, t.categoryId],
       foreignColumns: [menuCategories.tenantId, menuCategories.id],
@@ -102,7 +105,7 @@ export const menuOptionGroups = pgTable(
     ...timestamps(),
   },
   (t) => [
-    uniqueIndex('menu_option_groups_tenant_id_id_uq').on(t.tenantId, t.id),
+    unique('menu_option_groups_tenant_id_id_uq').on(t.tenantId, t.id),
     foreignKey({
       columns: [t.tenantId, t.menuItemId],
       foreignColumns: [menuItems.tenantId, menuItems.id],
@@ -233,7 +236,7 @@ export const pickupSlots = pgTable(
     ...timestamps(),
   },
   (t) => [
-    uniqueIndex('pickup_slots_tenant_id_id_uq').on(t.tenantId, t.id),
+    unique('pickup_slots_tenant_id_id_uq').on(t.tenantId, t.id),
     uniqueIndex('pickup_slots_tenant_window_uq').on(
       t.tenantId,
       t.startsAt,
