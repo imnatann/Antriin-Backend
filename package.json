@@ -18,6 +18,7 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "test": "tsc -p tsconfig.test.json && node --test .test-dist/test/*.spec.js",
+    "test:integration": "node scripts/test-integration.mjs",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
     "db:studio": "drizzle-kit studio",

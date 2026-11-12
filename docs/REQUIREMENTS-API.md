@@ -366,6 +366,8 @@ Klien perlu dapat membedakan: validasi form, saldo kurang, menu habis, tenant tu
 
 ## 12. Di luar cakupan dan keputusan yang belum ada
 
+**Keputusan implementasi pilot, 12 November 2026:** setelah dokumen requirements ini dibuat, pengguna menyetujui sandbox/stub dan menyerahkan pemilihan kebijakan awal kepada root. Keputusan tersebut dicatat terpisah di [PILOT-POLICY.md](PILOT-POLICY.md). Daftar di bawah tetap merekam batas prototype; implementasi pilot mengikuti keputusan eksplisit di dokumen itu. Aktivasi uang nyata/provider produksi belum termasuk penerimaan pilot.
+
 Hal berikut belum didefinisikan secara cukup oleh prototype; catat sebagai keputusan produk/operasional sebelum implementasi finansial produksi:
 
 1. Harga layanan, komisi tenant, pajak, biaya QRIS/top-up/payout, pembulatan dan siapa menanggung fee.

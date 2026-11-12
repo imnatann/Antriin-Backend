@@ -10,6 +10,7 @@ import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import helmet from '@fastify/helmet';
 import { Logger } from 'nestjs-pino';
 import { AppModule } from './app.module';
+import { ApiExceptionFilter } from './common/api-exception.filter';
 async function bootstrap() {
   const app = await NestFactory.create<NestFastifyApplication>(
     AppModule,
@@ -27,6 +28,7 @@ async function bootstrap() {
       .filter(Boolean),
   });
   app.setGlobalPrefix('v1');
+  app.useGlobalFilters(new ApiExceptionFilter());
   app.useGlobalPipes(
     new ValidationPipe({
       whitelist: true,
@@ -42,6 +44,7 @@ async function bootstrap() {
         'Backend foundation; business endpoints are implemented incrementally.',
       )
       .setVersion('0.1.0')
+      .addBearerAuth()
       .build();
     SwaggerModule.setup('docs', app, () =>
       SwaggerModule.createDocument(app, options),

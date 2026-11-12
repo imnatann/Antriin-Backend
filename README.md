@@ -81,6 +81,14 @@ Log menggunakan JSON Pino dengan redaksi authorization/cookie. Jangan menambahka
 
 ## Pemeriksaan
 
+Untuk menjalankan test integrasi pada PostgreSQL/Redis sementara yang terisolasi:
+
+```sh
+npm run test:integration
+```
+
+Perintah tersebut membuat container dengan nama unik, port loopback acak dan tanpa volume pengguna, menjalankan migrasi lalu test, dan menghentikan hanya container miliknya. `.env` lokal tidak diubah. CI menerapkan migrasi sebelum test database. `npm test` tanpa `TEST_DATABASE_URL` hanya menjalankan pengujian yang tidak memerlukan PostgreSQL; suite integrasi ditandai skip.
+
 ```sh
 npm run typecheck
 npm run lint
@@ -99,6 +107,14 @@ Gunakan `npm run infra:down` untuk menghentikan service tanpa menghapus volume. 
 Audit dependency production saat setup tidak menemukan vulnerability. Audit lengkap masih mencatat 14 temuan moderate pada dependency tooling development (rantai Drizzle Kit/esbuild dan ESLint/minimatch). Pantau update upstream; jangan menjalankan `npm audit fix --force` tanpa review karena rekomendasinya dapat mengganti major version atau menurunkan Drizzle Kit.
 
 Referensi: [NestJS/Fastify](https://docs.nestjs.com/techniques/performance), [NestJS queues](https://docs.nestjs.com/techniques/queues), [Drizzle](https://orm.drizzle.team/docs/transactions).
+
+## Kebijakan pilot dan konfigurasi auth
+
+Pengguna menyetujui sandbox/stub dan mendelegasikan keputusan awal kepada root. Keputusan beserta batasnya ada di [docs/PILOT-POLICY.md](docs/PILOT-POLICY.md); provider uang nyata belum diaktifkan. Biaya provider nyata dan kewajiban pajak tidak dianggap nol oleh kebijakan pilot.
+
+Variabel auth disediakan di `.env.example`. `AUTH_SECRET` memerlukan setidaknya 32 karakter acak; `AUTH_ENCRYPTION_KEY` adalah base64 dari tepat 32 byte acak, berbeda dari secret HMAC. Simpan hasil pembuatan kunci pada secret manager atau `.env` lokal, jangan commit atau cetak melalui log aplikasi. Tanpa kunci pada development, endpoint auth akan menolak operasi; konfigurasi production mewajibkan kunci valid. Adapter pengiriman tetap harus tersedia agar OTP dapat dikirim. Masa berlaku OTP, batas percobaan, cooldown, umur sesi dan retry delivery dikontrol oleh variabel `AUTH_*` pada contoh environment; lihat validasi terpusat untuk rentang nilai.
+
+Error API menggunakan `{error:{code,message,details?,request_id}}` dan header `x-request-id`; error internal tidak mengungkap pesan database/provider. Format readiness tetap mempertahankan status masing-masing dependency.
 
 ## Pengembangan dengan agent
 

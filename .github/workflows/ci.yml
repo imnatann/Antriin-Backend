@@ -25,6 +25,7 @@ jobs:
     env:
       NODE_ENV: test
       DATABASE_URL: postgresql://antriin:ci_only@127.0.0.1:5432/antriin
+      TEST_DATABASE_URL: postgresql://antriin:ci_only@127.0.0.1:5432/antriin
       REDIS_HOST: 127.0.0.1
       REDIS_PORT: 6379
       CORS_ORIGINS: http://localhost:3001
@@ -38,9 +39,9 @@ jobs:
       - run: npm run typecheck
       - run: npm run lint
       - run: npm run format:check
+      - run: npm run db:migrate
       - run: npm test
       - run: npm run build
-      - run: npm run db:migrate
       - name: Probe application readiness
         shell: bash
         run: |
