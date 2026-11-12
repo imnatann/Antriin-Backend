@@ -13,4 +13,14 @@ export class CreateTenantDto {
   @MinLength(1)
   @MaxLength(500)
   location!: string;
+
+  @ApiProperty({
+    minLength: 1,
+    maxLength: 500,
+    description: 'Managerial reason recorded in the immutable audit trail',
+  })
+  @IsString()
+  @MinLength(1)
+  @MaxLength(500)
+  reason!: string;
 }

@@ -1,26 +1,27 @@
 import {
   Body,
   Controller,
-  Delete,
   Get,
   Param,
   ParseUUIDPipe,
   Patch,
   Post,
-  Put,
   Query,
   UseGuards,
 } from '@nestjs/common';
-import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
+import {
+  ApiBearerAuth,
+  ApiOperation,
+  ApiResponse,
+  ApiTags,
+} from '@nestjs/swagger';
 import { AuthGuard, CurrentUser } from '../auth/auth.guard';
 import { AvailabilityService } from './availability.service';
 import {
   AvailabilityQueryDto,
   CreatePickupSlotDto,
-  OperatingHourOverrideDto,
-  ReplaceWeeklyHoursDto,
+  SlotRangeQueryDto,
   UpdatePickupSlotDto,
-  UpdateTenantAvailabilityStatusDto,
 } from './dto/availability.dto';
 
 @ApiTags('Tenant availability')
@@ -29,76 +30,70 @@ export class AvailabilityController {
   constructor(private readonly availability: AvailabilityService) {}
 
   @Get('tenants/:tenantId/availability')
-  @ApiOperation({ summary: 'List available pickup slots for a local date' })
+  @ApiOperation({
+    summary:
+      'List bookable pickup slots (open, future, remaining capacity) for a tenant local-date range',
+  })
+  @ApiResponse({
+    status: 200,
+    description:
+      'Available slots with remainingCapacity and version for quoting; empty when the tenant is paused/closed',
+  })
+  @ApiResponse({ status: 400, description: 'Invalid or too large date range' })
+  @ApiResponse({
+    status: 404,
+    description: 'Tenant not found, archived, or campus inactive',
+  })
   list(
     @Param('tenantId', new ParseUUIDPipe()) tenantId: string,
     @Query() query: AvailabilityQueryDto,
   ) {
-    return this.availability.listAvailability(tenantId, query.date);
+    return this.availability.listAvailability(tenantId, query);
   }
 
-  @Get('tenants/:tenantId/operating-hours')
+  @Get('tenants/:tenantId/availability/slots')
+  @UseGuards(AuthGuard)
+  @ApiBearerAuth()
   @ApiOperation({
-    summary: 'Read weekly operating hours and upcoming overrides',
+    summary:
+      'Tenant staff: list every slot (open/closed/full) in a local-date range with capacity counters',
   })
-  listHours(@Param('tenantId', new ParseUUIDPipe()) tenantId: string) {
-    return this.availability.listOperatingHours(tenantId);
-  }
-
-  @Put('tenants/:tenantId/operating-hours')
-  @UseGuards(AuthGuard)
-  @ApiBearerAuth()
-  @ApiOperation({ summary: 'Replace the complete local weekly schedule' })
-  replaceHours(
+  @ApiResponse({
+    status: 200,
+    description: 'Managed slot list in tenant timezone',
+  })
+  @ApiResponse({
+    status: 403,
+    description: 'Missing tenant.capacity.manage permission',
+  })
+  listManaged(
     @CurrentUser() principal: { userId: string; sessionId: string },
     @Param('tenantId', new ParseUUIDPipe()) tenantId: string,
-    @Body() dto: ReplaceWeeklyHoursDto,
+    @Query() query: SlotRangeQueryDto,
   ) {
-    return this.availability.replaceOperatingHours(
+    return this.availability.listManagedSlots(
       principal.userId,
       tenantId,
-      dto.days,
-    );
-  }
-
-  @Put('tenants/:tenantId/operating-hours/overrides/:localDate')
-  @UseGuards(AuthGuard)
-  @ApiBearerAuth()
-  @ApiOperation({ summary: 'Set a local-date opening exception' })
-  setOverride(
-    @CurrentUser() principal: { userId: string; sessionId: string },
-    @Param('tenantId', new ParseUUIDPipe()) tenantId: string,
-    @Param('localDate') localDate: string,
-    @Body() dto: OperatingHourOverrideDto,
-  ) {
-    return this.availability.setOperatingHourOverride(
-      principal.userId,
-      tenantId,
-      localDate,
-      dto,
-    );
-  }
-
-  @Delete('tenants/:tenantId/operating-hours/overrides/:localDate')
-  @UseGuards(AuthGuard)
-  @ApiBearerAuth()
-  @ApiOperation({ summary: 'Remove a local-date opening exception' })
-  removeOverride(
-    @CurrentUser() principal: { userId: string; sessionId: string },
-    @Param('tenantId', new ParseUUIDPipe()) tenantId: string,
-    @Param('localDate') localDate: string,
-  ) {
-    return this.availability.removeOperatingHourOverride(
-      principal.userId,
-      tenantId,
-      localDate,
+      query,
     );
   }
 
   @Post('tenants/:tenantId/availability/slots')
   @UseGuards(AuthGuard)
   @ApiBearerAuth()
-  @ApiOperation({ summary: 'Create a finite UTC pickup slot' })
+  @ApiOperation({
+    summary:
+      'Tenant staff: create a pickup slot (window must be future, fit operating hours and be unique per tenant)',
+  })
+  @ApiResponse({ status: 201, description: 'Slot created with version 1' })
+  @ApiResponse({
+    status: 403,
+    description: 'Missing tenant.capacity.manage permission',
+  })
+  @ApiResponse({
+    status: 409,
+    description: 'A slot with the same tenant window already exists',
+  })
   createSlot(
     @CurrentUser() principal: { userId: string; sessionId: string },
     @Param('tenantId', new ParseUUIDPipe()) tenantId: string,
@@ -110,7 +105,20 @@ export class AvailabilityController {
   @Patch('tenants/:tenantId/availability/slots/:slotId')
   @UseGuards(AuthGuard)
   @ApiBearerAuth()
-  @ApiOperation({ summary: 'Update slot capacity or availability state' })
+  @ApiOperation({
+    summary:
+      'Tenant staff: update slot capacity and/or open/close it (optimistic concurrency via expectedVersion; capacity cannot drop below reservedCount)',
+  })
+  @ApiResponse({ status: 200, description: 'Updated slot with bumped version' })
+  @ApiResponse({
+    status: 403,
+    description: 'Missing tenant.capacity.manage permission',
+  })
+  @ApiResponse({
+    status: 409,
+    description:
+      'Version conflict, capacity below reserved orders, or reopen rejected',
+  })
   updateSlot(
     @CurrentUser() principal: { userId: string; sessionId: string },
     @Param('tenantId', new ParseUUIDPipe()) tenantId: string,
@@ -121,22 +129,6 @@ export class AvailabilityController {
       principal.userId,
       tenantId,
       slotId,
-      dto,
-    );
-  }
-
-  @Patch('tenants/:tenantId/availability/status')
-  @UseGuards(AuthGuard)
-  @ApiBearerAuth()
-  @ApiOperation({ summary: 'Open, close, or pause tenant order intake' })
-  updateStatus(
-    @CurrentUser() principal: { userId: string; sessionId: string },
-    @Param('tenantId', new ParseUUIDPipe()) tenantId: string,
-    @Body() dto: UpdateTenantAvailabilityStatusDto,
-  ) {
-    return this.availability.updateTenantStatus(
-      principal.userId,
-      tenantId,
       dto,
     );
   }

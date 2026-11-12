@@ -148,3 +148,25 @@ Aturan terkait yang mengikat wave 2:
 8. Uang di DTO/API: string desimal dengan pola ^(0|[1-9][0-9]{0,37})$; total 0 ditolak 400 (D12 butir 5).
 
 - Kesenjangan entitas refund/cases/settlement/payout/review/risk = wave berikutnya sesuai roadmap, bukan bug wave 1.
+
+## D15 — Urutan checkout & penguncian slot (BLOCKER ditemukan reviewer, 12 Nov)
+
+Reviewer independen membuktikan dua kegagalan nyata pada rancangan checkout:
+
+1. `slot_reservations.order_id` kini punya FK ke `orders(id)` (0007). Urutan lama (reserve dengan `orderId` yang belum ada) gagal 23503. **Keputusan root:** baris `orders` WAJIB di-INSERT lebih dulu di dalam transaksi yang sama, baru reserve. Urutan resmi checkout: quote (server recompute) -> INSERT orders (status `paid_awaiting_tenant`, total sudah diketahui) -> INSERT order_items/order_item_options -> reserveForCheckout(orderId) -> debit wallet -> INSERT order_payments -> order_events + audit + outbox. Semua tetap satu transaksi; kegagalan di langkah mana pun me-rollback seluruhnya. Schema TIDAK dilonggarkan (tidak ada FK deferred, tidak ada kolom nullable baru).
+2. Deadlock lock-upgrade: `CatalogService.quote` memakai `assertBookableSlot(..., 'share')` (FOR SHARE) lalu `reserveForCheckout` memakai FOR UPDATE pada baris yang sama dalam transaksi yang sama. Dua checkout paralel saling menunggu upgrade -> PostgreSQL 40P01 (terbukti 7/8 deadlock). **Keputusan root:** quote TIDAK boleh mengunci baris slot. `assertBookableSlot` mendapat mode `none` (plain SELECT, tanpa FOR SHARE/FOR UPDATE) yang dipakai quote; reserve tetap `update` (FOR UPDATE) dan tetap menjadi satu-satunya otoritas validasi slot. Quote bersifat advisory, reserve bersifat authoritative.
+3. Pertahanan tambahan: checkout menangkap SQLSTATE 40P01 (deadlock) dan 40001 (serialization failure), mengulang transaksi paling banyak satu kali, dan memetakan kegagalan ulang ke 409 CONFLICT (bukan 500). Tidak boleh ada retry yang menggandakan efek finansial: retry hanya boleh membungkus transaksi yang belum commit.
+4. Dokumentasi wajib diperbarui: `docs/modules/availability.md` menyebut prasyarat "baris order harus ada sebelum reserve" dan semantik mode `none`; `docs/modules/orders.md` memuat urutan checkout resmi; `docs/HANDOFF.md` diperbarui root saat integrasi.
+
+## D16 — Akun ledger, permission, dan kontrak pickup (wave 2a, diterima root)
+
+1. Akun system ledger baru **`orders.payment.escrow`** (dana pembayaran ditahan terpisah dari payable tenant; BUKAN akun sandbox top-up). Dicatat di sini sebagai keputusan resmi; nama dan alasannya wajib disebut di `docs/modules/orders.md`. Akun system tidak boleh punya saldo negatif kecuali dinyatakan lain oleh constraint yang sudah ada.
+2. Permission transisi status order: `confirmed`/`declined` = `tenant.orders.accept`; `preparing` = `tenant.orders.prepare`; `ready_for_pickup` = `tenant.orders.prepare` ATAU `tenant.orders.accept` (dicek berurutan); `completed` (handover) = `tenant.orders.handover`. Staf pickup tidak mendapat akses finance/bank/payout.
+3. Checkout menahan lock `FOR UPDATE` pada baris slot SEBELUM quote (`assertBookableSlot(..., 'update')`) sehingga tidak ada jalur lock-upgrade; quote sendiri memakai mode `none` (tanpa lock baris slot). Keduanya dipertahankan: pre-lock menjamin urutan deterministik, quote tetap advisory.
+4. Retry deadlock: maksimal SATU retry untuk SQLSTATE 40P01/40001, kegagalan kedua -> `409 CHECKOUT_RETRY_CONFLICT` (bukan 500). Retry hanya membungkus transaksi yang belum commit.
+5. Idempotency HTTP: header `Idempotency-Key` WAJIB pada `POST /v1/orders` (400 `IDEMPOTENCY_KEY_REQUIRED` bila tidak ada, 400 `IDEMPOTENCY_KEY_INVALID` bila bentuknya tidak sah: 8..200 karakter A-Z a-z 0-9 . _ :). Service memvalidasi ulang untuk pemanggil non-HTTP.
+6. Kontrak pickup (stabil, dipakai slice pickup):
+   - `OrdersService.getOrderForHandover(client, tenantId, orderId)` -> `{ orderId, tenantId, buyerId, status, pickupSlotId, totalMinor, currency }`
+   - `OrdersService.markHandedOver(client, tenantId, orderId, actorUserId)` -> `void` (validasi status `ready_for_pickup`, set `completed`+`completed_at`, `consumeReservation`, tulis `order_events` + audit; replay = no-op).
+     Keduanya menerima `PoolClient` transaksi pemanggil; permission handover diperiksa pemanggil (`tenant.orders.handover`).
+7. Order number: `AN-YYYYMMDD-XXXXXX` (Crockford base32, 6 karakter), collision-safe dengan retry pada 23505; `orders.order_number` masih nullable di DB dan akan dibuat NOT NULL setelah backfill (migrasi berikutnya).
