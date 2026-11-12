@@ -63,7 +63,11 @@ sukses semua tanpa deadlock (regresi ini diuji di test/availability-concurrency.
 
 ### Semantik status reservasi
 
-- `reserved`: satu kursi terpakai terhadap kapasitas.
+- `reserved`: satu kursi terpakai terhadap kapasitas. Reserve replay untuk
+  order yang reservasinya sudah `released` -> 409 `Reservation for this order
+was released; create a new checkout` (R2-11); sudah `consumed` -> 409
+  `Reservation for this order was already consumed`; slot/tenant berbeda ->
+  409 `Order already has another slot reservation`.
 - `released`: kursi **dikembalikan** (batal/timeout sah); `released_at` wajib terisi
   (CHECK `slot_reservations_released_at_check`). Release ulang = no-op `false`
   (kapasitas tidak pernah dipulihkan dua kali); release order tak dikenal / tenant lain
@@ -158,10 +162,29 @@ operasional (lock baris tenant) dan `lockTenantContext` di slice ini.
 - `release`/`consume` mengembalikan boolean: `true` = transisi dilakukan,
   `false` = replay idempotent; 404 untuk order/tenant tak dikenal, 409 untuk
   transisi ilegal. Pemanggil (orders worker) dapat retry dengan aman.
-- Batas rentang: pembeli 31 hari (LIMIT 200 slot), staf 92 hari (LIMIT 500 slot);
-  di luar itu 400. Cukup untuk pilot; pagination cursor belum dibutuhkan.
-- Duplicate window slot (tenant_id, starts_at, ends_at) -> 409 dipetakan dari unique
-  violation 23505; pelanggaran CHECK saat tulis dipetakan ke 409 (bukan 500).
+- Batas rentang: pembeli 31 hari, staf 92 hari; di luar itu 400. Listing pembeli
+  (R2-05): kandidat diambil hingga LIMIT 5000 per rentang, filter jam operasional
+  di-cache per tanggal lokal (satu panggilan D8 per tanggal, bukan per slot), lalu
+  respons dipotong di 200 slot — filter tidak bisa menyebabkan under-report di
+  bawah cap. Daftar staf LIMIT 500. Pagination cursor belum dibutuhkan pilot.
+- Pemetaan error DB -> kontrak HTTP (R2-02 + keputusan root 12 Nov 2026: setiap
+  `ConflictException` hasil pemetaan WAJIB membawa `code` kontrak stabil di body,
+  status HTTP tetap 409). Kode ini yang dipakai slice orders untuk memicu retry
+  dan oleh test untuk assertion:
+
+  | SQLSTATE                               | Kondisi                                                                | HTTP | `code` body                  |
+  | -------------------------------------- | ---------------------------------------------------------------------- | ---- | ---------------------------- |
+  | 23505 `pickup_slots_tenant_window_uq`  | window slot duplikat                                                   | 409  | `SLOT_WINDOW_CONFLICT`       |
+  | 23505 `slot_reservations_order_unique` | race reserve order sama                                                | 409  | `RESERVATION_IN_PROGRESS`    |
+  | 23514                                  | CHECK capacity/window/released_at/consumed_at                          | 409  | `CHECK_CONSTRAINT_VIOLATION` |
+  | 23503                                  | FK `slot_reservations_order_fk` (orders belum ada) / composite slot FK | 409  | `REFERENCE_CONFLICT`         |
+  | 40P01 / 40001                          | deadlock / serialization failure (retryable)                           | 409  | `DATABASE_DEADLOCK`          |
+
+  Error DB yang dikenal tidak pernah bocor sebagai 500; error lain (termasuk
+  HttpException) diteruskan apa adanya.
+
+- Batas kapasitas 1..2.147.483.647 divalidasi di SERVICE juga (R2-06), bukan hanya
+  DTO, sehingga pemanggil non-HTTP tidak memicu 22003 -> 500.
 - Reopen slot yang `starts_at`-nya sudah lewat ditolak (409 `already started`).
 - Permission manajemen slot: `tenant.capacity.manage` (D10) — staf kitchen bisa
   bila diberi grant eksplisit; staf pickup tidak.
@@ -180,9 +203,12 @@ operasional (lock baris tenant) dan `lockTenantContext` di slice ini.
   Outbox/notifikasi untuk slot ditutup TIDAK diwajibkan saat ini (keputusan root
   12 Nov 2026 — jangan menambah event type sendiri); bila produk nanti
   menginginkannya, butuh arahan root.
-- Test pada level service terhadap PostgreSQL nyata (pola wallet-ledger.spec);
-  e2e HTTP melalui AppModule ditambahkan saat integrasi root. Verifikasi boot DI
-  (AppModule resolve) dilakukan terpisah saat integrasi.
+- Test pada level service terhadap PostgreSQL nyata (pola wallet-ledger.spec)
+  plus kontrak HTTP tanpa DB di test/availability-http.spec.ts (pola
+  catalog-http.spec: module test + override guard + ValidationPipe global;
+  mencakup 401/403/400/404/409, DTO edge validation, koersi transform, dan
+  principal dari sesi). Verifikasi boot DI (AppModule resolve +
+  /v1/health/ready 200) dilakukan via build sandbox .test-dist-availability*.
 - Constructor `AvailabilityService` kini 4 dependensi: DatabaseService,
   AccessService, TenantOperatingHoursService (D8), AuditService (audit manajemen).
   Konsumen yang meng-instantiate manual (mis. test slice lain) perlu menyesuaikan

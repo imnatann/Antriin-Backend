@@ -10,10 +10,15 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import {
+  ApiBadRequestResponse,
   ApiBearerAuth,
+  ApiConflictResponse,
+  ApiForbiddenResponse,
+  ApiNotFoundResponse,
+  ApiOkResponse,
   ApiOperation,
-  ApiResponse,
   ApiTags,
+  ApiUnauthorizedResponse,
 } from '@nestjs/swagger';
 import { AuthGuard, CurrentUser } from '../auth/auth.guard';
 import { AvailabilityService } from './availability.service';
@@ -34,14 +39,15 @@ export class AvailabilityController {
     summary:
       'List bookable pickup slots (open, future, remaining capacity) for a tenant local-date range',
   })
-  @ApiResponse({
-    status: 200,
+  @ApiOkResponse({
     description:
       'Available slots with remainingCapacity and version for quoting; empty when the tenant is paused/closed',
   })
-  @ApiResponse({ status: 400, description: 'Invalid or too large date range' })
-  @ApiResponse({
-    status: 404,
+  @ApiBadRequestResponse({
+    description:
+      "Invalid tenantId, invalid local date, mixed 'date' with 'from'/'to', reversed or too large range (> 31 days)",
+  })
+  @ApiNotFoundResponse({
     description: 'Tenant not found, archived, or campus inactive',
   })
   list(
@@ -58,13 +64,18 @@ export class AvailabilityController {
     summary:
       'Tenant staff: list every slot (open/closed/full) in a local-date range with capacity counters',
   })
-  @ApiResponse({
-    status: 200,
-    description: 'Managed slot list in tenant timezone',
+  @ApiOkResponse({
+    description: 'Managed slot list in the tenant timezone',
   })
-  @ApiResponse({
-    status: 403,
+  @ApiBadRequestResponse({
+    description: 'Invalid tenantId, missing/malformed from-to, range > 92 days',
+  })
+  @ApiUnauthorizedResponse({ description: 'Missing or invalid bearer token' })
+  @ApiForbiddenResponse({
     description: 'Missing tenant.capacity.manage permission',
+  })
+  @ApiNotFoundResponse({
+    description: 'Tenant not found, archived, or campus inactive',
   })
   listManaged(
     @CurrentUser() principal: { userId: string; sessionId: string },
@@ -83,15 +94,21 @@ export class AvailabilityController {
   @ApiBearerAuth()
   @ApiOperation({
     summary:
-      'Tenant staff: create a pickup slot (window must be future, fit operating hours and be unique per tenant)',
+      'Tenant staff: create a pickup slot (future window within operating hours, unique per tenant)',
   })
-  @ApiResponse({ status: 201, description: 'Slot created with version 1' })
-  @ApiResponse({
-    status: 403,
+  @ApiOkResponse({ description: 'Slot created with version 1' })
+  @ApiBadRequestResponse({
+    description:
+      'Malformed/non-ISO timestamps, endsAt <= startsAt, past window, capacity outside 1..2147483647, reason > 300 chars, slot outside operating hours, unknown body fields',
+  })
+  @ApiUnauthorizedResponse({ description: 'Missing or invalid bearer token' })
+  @ApiForbiddenResponse({
     description: 'Missing tenant.capacity.manage permission',
   })
-  @ApiResponse({
-    status: 409,
+  @ApiNotFoundResponse({
+    description: 'Tenant not found, archived, or campus inactive',
+  })
+  @ApiConflictResponse({
     description: 'A slot with the same tenant window already exists',
   })
   createSlot(
@@ -107,17 +124,23 @@ export class AvailabilityController {
   @ApiBearerAuth()
   @ApiOperation({
     summary:
-      'Tenant staff: update slot capacity and/or open/close it (optimistic concurrency via expectedVersion; capacity cannot drop below reservedCount)',
+      'Tenant staff: update slot capacity and/or open/close it (optimistic concurrency via expectedVersion)',
   })
-  @ApiResponse({ status: 200, description: 'Updated slot with bumped version' })
-  @ApiResponse({
-    status: 403,
+  @ApiOkResponse({ description: 'Updated slot with bumped version' })
+  @ApiBadRequestResponse({
+    description:
+      'Malformed slotId, no capacity/status provided, capacity outside 1..2147483647, invalid status, invalid expectedVersion, or missing/overlong reason (reason is required to close a slot or reduce capacity)',
+  })
+  @ApiUnauthorizedResponse({ description: 'Missing or invalid bearer token' })
+  @ApiForbiddenResponse({
     description: 'Missing tenant.capacity.manage permission',
   })
-  @ApiResponse({
-    status: 409,
+  @ApiNotFoundResponse({
+    description: 'Slot not found within this tenant, or tenant not found',
+  })
+  @ApiConflictResponse({
     description:
-      'Version conflict, capacity below reserved orders, or reopen rejected',
+      'Version conflict, capacity below reserved orders, or reopen rejected (slot already started / outside operating hours)',
   })
   updateSlot(
     @CurrentUser() principal: { userId: string; sessionId: string },

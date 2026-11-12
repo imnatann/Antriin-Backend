@@ -1,5 +1,6 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import {
+  IsDateString,
   IsIn,
   IsInt,
   IsOptional,
@@ -106,6 +107,7 @@ export class AvailabilityQueryDto {
   })
   @IsOptional()
   @Matches(LOCAL_DATE, { message: 'date must use YYYY-MM-DD format' })
+  @IsDateString({}, { message: 'date must be a real calendar date' })
   date?: string;
 
   @ApiPropertyOptional({
@@ -115,6 +117,7 @@ export class AvailabilityQueryDto {
   })
   @IsOptional()
   @Matches(LOCAL_DATE, { message: 'from must use YYYY-MM-DD format' })
+  @IsDateString({}, { message: 'from must be a real calendar date' })
   from?: string;
 
   @ApiPropertyOptional({
@@ -125,6 +128,7 @@ export class AvailabilityQueryDto {
   })
   @IsOptional()
   @Matches(LOCAL_DATE, { message: 'to must use YYYY-MM-DD format' })
+  @IsDateString({}, { message: 'to must be a real calendar date' })
   to?: string;
 }
 
@@ -135,6 +139,7 @@ export class SlotRangeQueryDto {
     description: 'Range start (tenant-local date)',
   })
   @Matches(LOCAL_DATE, { message: 'from must use YYYY-MM-DD format' })
+  @IsDateString({}, { message: 'from must be a real calendar date' })
   from!: string;
 
   @ApiProperty({
@@ -143,5 +148,6 @@ export class SlotRangeQueryDto {
     description: 'Range end inclusive (tenant-local date); max 92 days',
   })
   @Matches(LOCAL_DATE, { message: 'to must use YYYY-MM-DD format' })
+  @IsDateString({}, { message: 'to must be a real calendar date' })
   to!: string;
 }

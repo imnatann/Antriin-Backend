@@ -140,14 +140,55 @@ describe('Catalog HTTP contract', () => {
   });
 
   it('requires authentication for every admin route', async () => {
+    // Review R2-12: EVERY admin route must require authentication.
     const routes: [string, string, object?][] = [
       ['GET', `/v1/tenants/${tenantId}/menu/manage`],
       ['POST', `/v1/tenants/${tenantId}/menu/categories`, { name: 'X' }],
+      [
+        'PATCH',
+        `/v1/tenants/${tenantId}/menu/categories/${categoryId}`,
+        { name: 'Y' },
+      ],
+      [
+        'DELETE',
+        `/v1/tenants/${tenantId}/menu/categories/${categoryId}?reason=r`,
+      ],
       [
         'POST',
         `/v1/tenants/${tenantId}/menu/items`,
         { categoryId, name: 'X', priceMinor: '1' },
       ],
+      [
+        'PATCH',
+        `/v1/tenants/${tenantId}/menu/items/${itemId}`,
+        { priceMinor: '2', expectedVersion: 1 },
+      ],
+      ['DELETE', `/v1/tenants/${tenantId}/menu/items/${itemId}?reason=r`],
+      [
+        'POST',
+        `/v1/tenants/${tenantId}/menu/items/${itemId}/option-groups`,
+        { name: 'G' },
+      ],
+      [
+        'PATCH',
+        `/v1/tenants/${tenantId}/menu/option-groups/${groupId}`,
+        { name: 'H', expectedVersion: 1 },
+      ],
+      [
+        'DELETE',
+        `/v1/tenants/${tenantId}/menu/option-groups/${groupId}?reason=r`,
+      ],
+      [
+        'POST',
+        `/v1/tenants/${tenantId}/menu/option-groups/${groupId}/choices`,
+        { name: 'C' },
+      ],
+      [
+        'PATCH',
+        `/v1/tenants/${tenantId}/menu/choices/${choiceId}`,
+        { name: 'D', expectedVersion: 1 },
+      ],
+      ['DELETE', `/v1/tenants/${tenantId}/menu/choices/${choiceId}?reason=r`],
     ];
     for (const [method, url, payload] of routes) {
       const response = await app.inject({

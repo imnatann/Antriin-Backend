@@ -2,6 +2,7 @@ import {
   BadRequestException,
   ConflictException,
   ForbiddenException,
+  HttpException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
@@ -34,6 +35,7 @@ import {
   PAYMENT_ESCROW_SYSTEM_KEY,
   PRE_PRODUCTION_STATUSES,
   TENANT_ORDER_PERMISSIONS,
+  TERMINAL_STATUSES,
 } from './orders.constants';
 import type { OrderStatus } from './orders.constants';
 
@@ -170,6 +172,20 @@ export interface OrderView extends OrderSummaryView {
   items: OrderItemView[];
   payment: OrderPaymentView | null;
   scheduleProposal: ScheduleProposalView | null;
+}
+
+/**
+ * Result of a manager refund decision that cancels an order. Consumed by the
+ * refunds/cases slice (wave 3) which executes the actual money movement.
+ */
+export interface OrderRefundDecisionResult {
+  orderId: string;
+  buyerId: string;
+  tenantId: string;
+  status: string;
+  totalMinor: string;
+  currency: string;
+  orderPaymentId: string;
 }
 
 /** Stable contract for the pickup slice (see docs/modules/orders.md). */
@@ -409,6 +425,10 @@ export class OrdersService {
     );
     if (!buyer.rows[0]) throw new NotFoundException('Buyer account not found');
 
+    // P2-05: pin the tenant row (shared) before reading any tenant state, so a
+    // concurrent tenant archive cannot slip between the check and the commit.
+    await this.lockTenantForOrderCommitment(client, input.tenantId);
+
     // Lock the slot row FOR UPDATE *before* quoting. CatalogService.quote takes
     // FOR SHARE on the same row; acquiring the stronger lock first removes the
     // share->update upgrade that deadlocked parallel checkouts (D15.B).
@@ -606,6 +626,8 @@ export class OrdersService {
         definition.permissions,
         client,
       );
+      // P2-05: serialize against a concurrent tenant archive.
+      await this.lockTenantForOrderCommitment(client, tenantId);
       const order = await this.lockTenantOrder(
         client,
         tenantId,
@@ -1194,6 +1216,166 @@ export class OrdersService {
   }
 
   // ---------------------------------------------------------------------------
+  // Contract for the refunds/cases slice (wave 3)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Cancels an order as the outcome of a manager refund decision and returns
+   * the payment reference the refunds slice must refund.
+   *
+   * Single writer per table (D4): the refunds/cases modules never update
+   * `orders`; they call this method inside THEIR transaction (the caller owns
+   * BEGIN/COMMIT and the authorization of its own actor).
+   *
+   * Behaviour:
+   * - locks the order row FOR UPDATE and derives tenant/buyer/total/currency
+   *   from that row (never from parameters);
+   * - rejects 409 when the order is already completed, cancelled or declined
+   *   (no money may be returned after handover, and a terminal order must not be
+   *   cancelled twice);
+   * - sets status='cancelled', cancelled_at=now(), version=version+1 and
+   *   updated_at=now(), which satisfies CHECK 0007
+   *   (`orders_status_timestamps_check` for cancelled + monotonicity);
+   * - releases the capacity reservation idempotently (a replay or an already
+   *   released reservation is a no-op, capacity is never returned twice);
+   * - writes the `order.cancelled` order event, an immutable audit entry and a
+   *   buyer outbox notification inside the same transaction;
+   * - requires the order to have a payment row, because a refund without a
+   *   captured payment is not executable (409 otherwise).
+   */
+  async cancelForRefundDecision(
+    client: PoolClient,
+    orderId: string,
+    actorUserId: string,
+    reason: string,
+  ): Promise<OrderRefundDecisionResult> {
+    this.assertUuid(orderId, 'order id');
+    this.assertUuid(actorUserId, 'actor id');
+    const trimmedReason = typeof reason === 'string' ? reason.trim() : '';
+    if (!trimmedReason) {
+      throw new BadRequestException(
+        'reason is required to cancel an order for a refund decision',
+      );
+    }
+    if (trimmedReason.length > 500) {
+      throw new BadRequestException('reason must be at most 500 characters');
+    }
+
+    const locked = await client.query<{
+      id: string;
+      buyer_id: string;
+      tenant_id: string;
+      status: OrderStatus;
+      total_minor: string;
+      currency: string;
+    }>(
+      `SELECT id, buyer_id, tenant_id, status, total_minor::text AS total_minor,
+              currency
+         FROM orders WHERE id = $1 FOR UPDATE`,
+      [orderId],
+    );
+    const order = locked.rows[0];
+    if (!order) throw new NotFoundException('Order not found');
+    if (TERMINAL_STATUSES.includes(order.status)) {
+      throw new ConflictException({
+        code: 'ORDER_CANCEL_CONFLICT',
+        message: `Order cannot be cancelled for a refund from ${order.status}`,
+      });
+    }
+
+    const payment = await client.query<{ id: string }>(
+      `SELECT id FROM order_payments
+        WHERE order_id = $1 AND status = 'succeeded'
+        ORDER BY created_at, id LIMIT 1`,
+      [orderId],
+    );
+    if (!payment.rows[0]) {
+      throw new ConflictException({
+        code: 'ORDER_PAYMENT_NOT_REFUNDABLE',
+        message: 'Order has no successful payment that could be refunded',
+      });
+    }
+    const orderPaymentId = payment.rows[0].id;
+
+    const updated = await client.query(
+      `UPDATE orders
+          SET status = 'cancelled', cancelled_at = now(),
+              version = version + 1, updated_at = now()
+        WHERE id = $1 AND status = $2
+        RETURNING version`,
+      [orderId, order.status],
+    );
+    if (updated.rowCount !== 1) {
+      throw new ConflictException({
+        code: 'ORDER_CANCEL_CONFLICT',
+        message: 'Order changed; reload and retry',
+      });
+    }
+
+    // Idempotent by contract: false when the reservation was already released
+    // (capacity is never returned twice). A missing reservation row means the
+    // seat was never held, which is not a failure for the cancellation itself.
+    try {
+      await this.availability.releaseReservation(
+        client,
+        order.tenant_id,
+        orderId,
+      );
+    } catch (error) {
+      if (!(error instanceof NotFoundException)) throw error;
+    }
+
+    await this.appendOrderEvent(client, {
+      orderId,
+      eventType: 'order.cancelled',
+      fromStatus: order.status,
+      toStatus: 'cancelled',
+      actorUserId,
+      reason: trimmedReason,
+      metadata: {
+        orderPaymentId,
+        totalMinor: order.total_minor,
+        currency: order.currency,
+        refundExecution:
+          'refunds module (wave 3) after provider success + dedupe',
+      },
+    });
+    await this.audit.append(client, {
+      actor: { userId: actorUserId },
+      scopeType: 'tenant',
+      scopeId: order.tenant_id,
+      action: 'tenant.orders.cancelled_by_manager',
+      targetType: 'order',
+      targetId: orderId,
+      reason: trimmedReason,
+      metadata: {
+        fromStatus: order.status,
+        toStatus: 'cancelled',
+        orderPaymentId,
+        totalMinor: order.total_minor,
+        currency: order.currency,
+      },
+    });
+    await this.outbox.append(client, {
+      eventKey: `order.cancelled:${orderId}`,
+      eventType: 'order.status_changed',
+      aggregateType: 'order',
+      aggregateId: orderId,
+      recipientIds: [order.buyer_id],
+    });
+
+    return {
+      orderId,
+      buyerId: order.buyer_id,
+      tenantId: order.tenant_id,
+      status: 'cancelled',
+      totalMinor: order.total_minor,
+      currency: order.currency,
+      orderPaymentId,
+    };
+  }
+
+  // ---------------------------------------------------------------------------
   // Internal helpers
   // ---------------------------------------------------------------------------
 
@@ -1648,6 +1830,45 @@ export class OrdersService {
       [tenantId],
     );
     return result.rows.map((row) => row.user_id);
+  }
+
+  /**
+   * P2-05 (write-skew guard): hold a SHARE lock on the tenant row for the whole
+   * transaction that creates or transitions an order, before any tenant state
+   * is read.
+   *
+   * TenantsService.archive() locks the same row with FOR UPDATE before counting
+   * dependencies, so the two paths are serialized:
+   * - archive first -> this read sees status 'archived' and the checkout fails
+   *   with 404 (no order is ever born on an archived tenant);
+   * - checkout first -> the archive UPDATE waits until the order transaction
+   *   commits, so the archive dependency count includes the new order and the
+   *   archive is refused with 409 instead of silently overriding it.
+   * FOR SHARE (not FOR UPDATE) keeps concurrent checkouts of the same tenant
+   * parallel; only writers of the tenant row block.
+   */
+  private async lockTenantForOrderCommitment(
+    client: PoolClient,
+    tenantId: string,
+  ): Promise<{ tenantId: string; campusId: string; timezone: string }> {
+    const result = await client.query<{
+      id: string;
+      campus_id: string;
+      timezone: string;
+    }>(
+      `SELECT t.id, t.campus_id, c.timezone
+         FROM tenants t JOIN campuses c ON c.id = t.campus_id
+        WHERE t.id = $1 AND t.status <> 'archived' AND c.status = 'active'
+        FOR SHARE OF t, c`,
+      [tenantId],
+    );
+    const row = result.rows[0];
+    if (!row) throw new NotFoundException('Tenant not found');
+    return {
+      tenantId: row.id,
+      campusId: row.campus_id,
+      timezone: row.timezone,
+    };
   }
 
   private async fetchOrderRow(
@@ -2125,12 +2346,37 @@ export class OrdersService {
     }
   }
 
+  /**
+   * A checkout transaction may be retried exactly once when PostgreSQL aborted
+   * it with a deadlock (40P01) or a serialization failure (40001). Two shapes
+   * reach this method:
+   *
+   * 1. A raw database error, when the failing statement belongs to this slice
+   *    (e.g. our own `UPDATE orders SET paid_at`).
+   * 2. The stable contract code `DATABASE_DEADLOCK` that the availability slice
+   *    attaches to its mapped 409 (R2-02), because reserve/release/consume now
+   *    convert database rejections into ConflictException bodies.
+   *
+   * Retrying is safe in both cases: the transaction never committed, so no
+   * financial or capacity effect can be duplicated (D15). Mapped errors keep
+   * their 409 status; only the retry decision depends on this classification.
+   */
   private isRetryableTransactionError(error: unknown): boolean {
-    if (typeof error !== 'object' || error === null || !('code' in error)) {
-      return false;
+    if (typeof error === 'object' && error !== null && 'code' in error) {
+      const code = (error as { code?: unknown }).code;
+      if (code === '40P01' || code === '40001') return true;
     }
-    const code = (error as { code?: unknown }).code;
-    return code === '40P01' || code === '40001';
+    if (error instanceof HttpException) {
+      const response: unknown = error.getResponse();
+      if (
+        typeof response === 'object' &&
+        response !== null &&
+        'code' in response
+      ) {
+        return (response as { code?: unknown }).code === 'DATABASE_DEADLOCK';
+      }
+    }
+    return false;
   }
 
   private async withTransaction<T>(

@@ -13,6 +13,7 @@ import {
 import { ConfigService } from '@nestjs/config';
 import {
   ApiBody,
+  ApiBadRequestResponse,
   ApiConflictResponse,
   ApiHeader,
   ApiNotFoundResponse,
@@ -67,6 +68,10 @@ export class PaymentsWebhookController {
   })
   @ApiBody({ type: SandboxWebhookEventDto })
   @ApiOkResponse({ description: 'Event applied, deduplicated, or ignored' })
+  @ApiBadRequestResponse({
+    description:
+      'Malformed event body. NOTE (review P2-02): the global ValidationPipe runs before the handler, so a malformed body is rejected with 400 even when signature headers are missing; well-formed bodies with missing/invalid credentials are rejected with 401 before any state change.',
+  })
   @ApiUnauthorizedResponse({
     description: 'Missing/invalid signature or stale timestamp',
   })

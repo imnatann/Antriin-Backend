@@ -491,15 +491,31 @@ export class PaymentsService {
     });
   }
 
-  /** Due rows for the dispatcher; includes processing rows whose lease expired. */
-  async listDuePaymentRequests(
-    limit = 20,
-  ): Promise<{ topupId: string; attempts: number }[]> {
+  /**
+   * Due rows for the dispatcher; includes processing rows whose lease expired.
+   * `nonce` is the row's updated_at in epoch microseconds: it changes on every
+   * lease/defer/settle cycle, so a dispatcher jobId embedding it is stable
+   * while nothing happened and fresh after ANY row state change (review
+   * P2-01). `staleForSeconds` measures how long the row has been waiting
+   * since its last state change; the dispatcher alarms above a threshold.
+   */
+  async listDuePaymentRequests(limit = 20): Promise<
+    {
+      topupId: string;
+      attempts: number;
+      nonce: string;
+      staleForSeconds: number;
+    }[]
+  > {
     const result = await this.database.pool.query<{
       topup_id: string;
       attempts: number;
+      nonce: string;
+      stale_for_seconds: number;
     }>(
-      `select topup_id::text, attempts
+      `select topup_id::text, attempts,
+              floor(extract(epoch from updated_at) * 1000000)::bigint::text as nonce,
+              floor(extract(epoch from (now() - updated_at)))::int as stale_for_seconds
          from payment_request_outbox
         where (status = 'pending' and available_at <= now())
            or (status = 'processing' and lease_until < now())
@@ -510,6 +526,8 @@ export class PaymentsService {
     return result.rows.map((row) => ({
       topupId: row.topup_id,
       attempts: Number(row.attempts),
+      nonce: row.nonce,
+      staleForSeconds: Number(row.stale_for_seconds),
     }));
   }
 

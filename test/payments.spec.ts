@@ -903,3 +903,247 @@ describe(
     });
   },
 );
+
+// ---------- review follow-ups: P2-01 dispatch state + P2-03 webhook branches ----------
+
+describe(
+  'Payments webhook edge branches and dispatch state (P2-01/P2-03)',
+  { skip: !process.env.TEST_DATABASE_URL },
+  () => {
+    let pool: Pool;
+    let db: DatabaseService;
+    let ctx: ReturnType<typeof buildPayments>;
+
+    async function newUser(): Promise<string> {
+      const id = randomUUID();
+      const r = await pool.query<{ id: string }>(
+        'insert into users (display_name) values ($1) returning id',
+        ['Payments edge test ' + id],
+      );
+      return r.rows[0].id;
+    }
+
+    function webhookEvent(overrides: {
+      reference: string;
+      eventId?: string;
+      status?: 'pending' | 'succeeded' | 'failed' | 'expired';
+      amountMinor?: string;
+      currency?: string;
+      occurredAt?: string;
+    }) {
+      const body = {
+        eventId: overrides.eventId ?? randomUUID(),
+        reference: overrides.reference,
+        status: overrides.status ?? 'succeeded',
+        amountMinor: overrides.amountMinor ?? '50000',
+        currency: overrides.currency ?? 'IDR',
+        occurredAt: overrides.occurredAt ?? new Date().toISOString(),
+      };
+      return {
+        rawBody: Buffer.from(JSON.stringify(body), 'utf8'),
+        body: body as unknown as SandboxWebhookEventDto,
+      };
+    }
+
+    before(async () => {
+      pool = new Pool({
+        connectionString: process.env.TEST_DATABASE_URL,
+        max: 12,
+      });
+      await pool.query('select 1');
+      db = { pool } as unknown as DatabaseService;
+      ctx = buildPayments(db);
+    });
+    after(async () => {
+      await pool?.end();
+    });
+
+    it('conflict: same event id with a different payload is refused and keeps one event row', async () => {
+      const userId = await newUser();
+      const intent = await ctx.payments.createTopupIntent(userId, {
+        amountMinor: '50000',
+        idempotencyKey: randomUUID(),
+      });
+      const eventId = randomUUID();
+      const first = webhookEvent({
+        reference: intent.view.providerReference,
+        eventId,
+        amountMinor: '50000',
+      });
+      const r1 = await ctx.payments.handleProviderEvent(
+        first.rawBody,
+        first.body,
+      );
+      assert.equal(r1.kind, 'applied');
+      const second = webhookEvent({
+        reference: intent.view.providerReference,
+        eventId,
+        amountMinor: '50001',
+      });
+      const r2 = await ctx.payments.handleProviderEvent(
+        second.rawBody,
+        second.body,
+      );
+      assert.equal(r2.kind, 'conflict');
+      const bal = await ctx.wallet.getBalance(userId, 'IDR');
+      assert.equal(bal[0].balanceMinor, '50000');
+      const ev = await pool.query(
+        "select count(*)::int as n from payment_provider_events where provider='sandbox' and event_id=$1",
+        [eventId],
+      );
+      assert.equal(ev.rows[0].n, 1);
+    });
+
+    it('state mismatch: succeeded event on a failed intent is refused without credit', async () => {
+      const userId = await newUser();
+      const intent = await ctx.payments.createTopupIntent(userId, {
+        amountMinor: '50000',
+        idempotencyKey: randomUUID(),
+      });
+      const fail = webhookEvent({
+        reference: intent.view.providerReference,
+        status: 'failed',
+      });
+      const r1 = await ctx.payments.handleProviderEvent(
+        fail.rawBody,
+        fail.body,
+      );
+      assert.equal(r1.kind, 'applied');
+      const succ = webhookEvent({
+        reference: intent.view.providerReference,
+        status: 'succeeded',
+      });
+      const r2 = await ctx.payments.handleProviderEvent(
+        succ.rawBody,
+        succ.body,
+      );
+      assert.equal(r2.kind, 'mismatch');
+      if (r2.kind === 'mismatch') assert.equal(r2.reason, 'state');
+      const bal = await ctx.wallet.getBalance(userId, 'IDR');
+      assert.equal(bal[0].balanceMinor, '0');
+      const t = await pool.query<{ status: string }>(
+        'select status from topup_intents where id=$1',
+        [intent.view.id],
+      );
+      assert.equal(t.rows[0].status, 'failed');
+      const ev = await pool.query<{ outcome: string }>(
+        "select outcome from payment_provider_events where provider='sandbox' and event_id=$1",
+        [succ.body.eventId],
+      );
+      assert.equal(ev.rows[0].outcome, 'mismatch');
+    });
+
+    it('expired terminal event moves the intent to expired without credit', async () => {
+      const userId = await newUser();
+      const intent = await ctx.payments.createTopupIntent(userId, {
+        amountMinor: '50000',
+        idempotencyKey: randomUUID(),
+      });
+      const exp = webhookEvent({
+        reference: intent.view.providerReference,
+        status: 'expired',
+      });
+      const r = await ctx.payments.handleProviderEvent(exp.rawBody, exp.body);
+      assert.equal(r.kind, 'applied');
+      const t = await pool.query<{
+        status: string;
+        succeeded_at: Date | null;
+        status_version: number;
+      }>(
+        'select status, succeeded_at, status_version from topup_intents where id=$1',
+        [intent.view.id],
+      );
+      assert.equal(t.rows[0].status, 'expired');
+      assert.equal(t.rows[0].succeeded_at, null);
+      assert.equal(t.rows[0].status_version, 2);
+      const bal = await ctx.wallet.getBalance(userId, 'IDR');
+      assert.equal(bal[0].balanceMinor, '0');
+      const auditRow = await pool.query(
+        "select 1 from audit_events where target_type='topup_intent' and target_id=$1 and action='topup.expired'",
+        [intent.view.id],
+      );
+      assert.equal(auditRow.rowCount, 1);
+      const outboxRow = await pool.query(
+        'select 1 from outbox_events where event_key=$1',
+        ['topup_intent:' + intent.view.id + ':expired'],
+      );
+      assert.equal(outboxRow.rowCount, 1);
+    });
+
+    it('takes over a processing row whose lease expired and completes it', async () => {
+      const userId = await newUser();
+      const intent = await ctx.payments.createTopupIntent(userId, {
+        amountMinor: '15000',
+        idempotencyKey: randomUUID(),
+      });
+      await pool.query(
+        "update payment_request_outbox set status='processing', attempts=1, lease_token=$2, lease_until=now()-interval '10 seconds', updated_at=now() where topup_id=$1",
+        [intent.view.id, randomUUID()],
+      );
+      const out = await ctx.payments.processPaymentRequest(intent.view.id);
+      assert.equal(out.outcome, 'completed');
+      const row = await pool.query<{ status: string; attempts: number }>(
+        'select status, attempts from payment_request_outbox where topup_id=$1',
+        [intent.view.id],
+      );
+      assert.equal(row.rows[0].status, 'complete');
+      assert.equal(row.rows[0].attempts, 2);
+    });
+
+    it('listDuePaymentRequests exposes nonce and staleness; nonce changes after a lease cycle', async () => {
+      const userId = await newUser();
+      const intent = await ctx.payments.createTopupIntent(userId, {
+        amountMinor: '15000',
+        idempotencyKey: randomUUID(),
+      });
+      // Backdate so the row sorts first among leftover due rows from earlier
+      // runs (order by available_at), keeping the lookup deterministic.
+      await pool.query(
+        "update payment_request_outbox set available_at=now()-interval '1 hour' where topup_id=$1",
+        [intent.view.id],
+      );
+      const due1 = await ctx.payments.listDuePaymentRequests(100);
+      const row1 = due1.find((r) => r.topupId === intent.view.id);
+      assert.ok(row1, 'fresh intent row is due');
+      assert.ok(
+        /^[0-9]+$/.test(row1.nonce),
+        'nonce is epoch-microseconds digits',
+      );
+      assert.ok(row1.staleForSeconds >= 0);
+      const flaky: TopupProviderAdapter = {
+        provider: 'sandbox',
+        buildProviderReference: (i) => ctx.adapter.buildProviderReference(i),
+        renderQrisPayload: (i) => ctx.adapter.renderQrisPayload(i),
+        createPaymentRequest: async () => {
+          throw new Error('blip');
+        },
+      };
+      const svc = new PaymentsService(
+        db,
+        ctx.wallet,
+        ctx.audit,
+        ctx.outbox,
+        makeConfig(),
+        flaky,
+      );
+      const deferred = await svc.processPaymentRequest(intent.view.id);
+      assert.equal(deferred.outcome, 'deferred');
+      await pool.query(
+        "update payment_request_outbox set available_at=now()-interval '1 hour' where topup_id=$1",
+        [intent.view.id],
+      );
+      const due2 = await ctx.payments.listDuePaymentRequests(100);
+      const row2 = due2.find((r) => r.topupId === intent.view.id);
+      assert.ok(row2);
+      assert.notEqual(
+        row2.nonce,
+        row1.nonce,
+        'nonce must change after a lease cycle',
+      );
+      assert.notEqual(row2.attempts, row1.attempts);
+      // Complete the row with the real adapter so no extra due row is left behind.
+      const done = await ctx.payments.processPaymentRequest(intent.view.id);
+      assert.equal(done.outcome, 'completed');
+    });
+  },
+);

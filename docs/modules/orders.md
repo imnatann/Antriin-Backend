@@ -42,7 +42,13 @@ event, dan record idempotency semuanya tidak berubah.
 ### Kebijakan retry (D15.B)
 
 - Transaksi checkout dibungkus `withTransactionRetry`: **maksimal SATU** percobaan ulang untuk
-  SQLSTATE `40P01` (deadlock) dan `40001` (serialization failure).
+  SQLSTATE `40P01` (deadlock) dan `40001` (serialization failure). Sejak R2-02, slice
+  availability memetakan error database menjadi `ConflictException` 409 dengan kode kontrak
+  stabil, sehingga retry juga dipicu oleh kode kontrak **`DATABASE_DEADLOCK`**
+  (`isRetryableTransactionError` menerima raw `40P01`/`40001` **dan** `HttpException` yang
+  body-nya ber-`code: 'DATABASE_DEADLOCK'`). Error yang sudah dipetakan tidak wajib di-retry,
+  tetapi karena kode itu hanya muncul dari deadlock/serialization dan transaksinya sudah
+  di-rollback, satu retry tetap aman dan sesuai D15.
 - Retry hanya membungkus transaksi yang **belum commit**, sehingga tidak pernah menggandakan
   efek finansial (idempotency + unique constraint ledger tetap menjadi jaring kedua).
 - Kegagalan kedua -> `409 CHECKOUT_RETRY_CONFLICT`, bukan 500.
@@ -52,8 +58,27 @@ event, dan record idempotency semuanya tidak berubah.
 a deadlock` menjalankan 10 checkout paralel: semuanya sukses, `reserved_count` = jumlah order
   sukses, dan rekonsiliasi `reserved_count = COUNT(slot_reservations status IN
 ('reserved','consumed'))` terpenuhi.
-- Test `retries a deadlocked checkout exactly once and then fails with 409, not 500` menyuntikkan
-  `40P01` deterministik (trigger ber-scope tenant) dan membuktikan tepat 2 percobaan lalu 409.
+- Bukti retry (4 test, semua deterministik, trigger/kontrak ber-scope tenant):
+  1. `40P01` mentah dari statement milik slice ini (`UPDATE orders SET paid_at`) -> tepat **2**
+     percobaan lalu `409 CHECKOUT_RETRY_CONFLICT`, tanpa order/debit/kursi tertinggal;
+  2. kode kontrak `DATABASE_DEADLOCK` dari availability (disimulasikan pada percobaan pertama)
+     -> tepat **2** panggilan reserve lalu checkout sukses;
+  3. kode kontrak yang persisten -> `409 CHECKOUT_RETRY_CONFLICT` setelah tepat 2 percobaan,
+     tanpa efek samping;
+  4. `40P01` nyata yang dipetakan availability -> selalu 409 (tidak pernah 500) dan tidak ada efek
+     samping; jumlah percobaan tetap <= 2.
+
+### Pemetaan error database (R2-02)
+
+Slice availability mengubah penolakan database menjadi 409 dengan kode kontrak:
+`DATABASE_DEADLOCK` (40P01/40001), `REFERENCE_CONFLICT` (23503),
+`CHECK_CONSTRAINT_VIOLATION` (23514), `SLOT_WINDOW_CONFLICT` / `RESERVATION_IN_PROGRESS`
+(23505). Konsekuensi untuk slice ini:
+
+- `isRetryableTransactionError` mengenali raw code **dan** kode kontrak `DATABASE_DEADLOCK`.
+- Test FK tidak lagi menegaskan SQLSTATE mentah: reservasi untuk `orderId` yang belum ada harus
+  menghasilkan `ConflictException` dengan kode `REFERENCE_CONFLICT` (dan tetap tidak menyisakan
+  reservasi/kursi). Urutan checkout D15 (orders dulu, reserve kemudian) tetap yang mencegahnya.
 
 ## 2. Idempotency
 
@@ -172,6 +197,72 @@ markHandedOver(client, tenantId, orderId, actorUserId): Promise<void>
   = no-op.
 - `order_handovers` ditulis oleh slice pickup (satu penulis per tabel, D4), bukan oleh modul ini.
 
+## 7b. Kontrak untuk slice refunds/cases (signature final)
+
+```ts
+cancelForRefundDecision(
+  client: PoolClient,
+  orderId: string,
+  actorUserId: string,
+  reason: string,
+): Promise<{
+  orderId: string;
+  buyerId: string;
+  tenantId: string;
+  status: string;
+  totalMinor: string;
+  currency: string;
+  orderPaymentId: string;
+}>
+```
+
+Dipakai modul refunds/cases (wave 3) saat keputusan pengelola kampus adalah
+membatalkan order. Satu penulis per tabel (D4): modul lain tidak pernah
+meng-update `orders`; mereka memanggil method ini **di dalam transaksinya sendiri**
+(caller memegang BEGIN/COMMIT dan otorisasi aktornya).
+
+Perilaku:
+
+- `SELECT ... FROM orders WHERE id = $1 FOR UPDATE`; `buyerId`, `tenantId`,
+  `totalMinor`, dan `currency` **selalu diambil dari baris itu**, bukan dari parameter.
+- `409 ORDER_CANCEL_CONFLICT` bila status sudah `completed`, `cancelled`, atau `declined`
+  (dana sudah terserahkan, atau order sudah terminal sehingga tidak boleh dibatalkan dua kali).
+- `409 ORDER_PAYMENT_NOT_REFUNDABLE` bila order tidak punya baris `order_payments` sukses
+  (tidak ada pembayaran yang bisa direfund).
+- Set status `cancelled`, `cancelled_at = now()`, `version = version + 1`,
+  `updated_at = now()` — memenuhi CHECK 0007 `orders_status_timestamps_check` (cancelled wajib
+  punya `cancelled_at`) dan `orders_timestamps_monotonic_check`.
+- `AvailabilityService.releaseReservation` idempoten: kursi dikembalikan tepat sekali; replay
+  atau reservasi yang sudah `released` = no-op. Reservasi yang tidak pernah ada bukan kegagalan
+  pembatalan.
+- Menulis `order_events` `order.cancelled` (actor = `actorUserId`, reason = alasan keputusan),
+  audit `tenant.orders.cancelled_by_manager` (scope tenant, reason wajib) dan outbox notifikasi
+  ke buyer, semuanya dalam transaksi yang sama.
+- `reason` wajib non-empty (maks 500 karakter); kosong -> 400.
+- Uang **tidak** berpindah di sini: refund dieksekusi modul refunds setelah provider sukses dan
+  dedupe. `orderPaymentId` adalah referensi yang harus direfund.
+
+## 7c. P2-05 — lock tenant vs archive (write skew)
+
+Checkout dan transisi status order memanggil `lockTenantForOrderCommitment` sebagai langkah
+pertama: `SELECT ... FROM tenants JOIN campuses ... FOR SHARE OF t, c` pada tenant yang
+`status <> 'archived'` dan kampus `active`. `TenantsService.archive` mengunci baris yang sama
+dengan `FOR UPDATE` sebelum menghitung dependensi, sehingga kedua jalur terserialisasi:
+
+- archive lebih dulu -> checkout membaca tenant `archived` dan gagal 404; **tidak ada order yang
+  lahir pada tenant terarsip**;
+- checkout lebih dulu -> `UPDATE tenants` menunggu sampai transaksi order commit, lalu archive
+  ditolak `409` karena hitungan dependensi (active order) sudah mencakup order baru.
+
+`FOR SHARE` (bukan `FOR UPDATE`) dipilih agar checkout paralel pada tenant yang sama tetap
+berjalan bersamaan; hanya penulis baris tenant yang diblokir.
+
+## 7d. Retry 40P01 (konfirmasi)
+
+Checkout tetap membungkus transaksi dengan `withTransactionRetry`: maksimal SATU retry untuk
+SQLSTATE `40P01`/`40001`, kegagalan kedua -> `409 CHECKOUT_RETRY_CONFLICT` (bukan 500). Tidak
+ada perubahan pada kebijakan ini; lihat bagian 1.
+
 ## 8. Order number
 
 Format `AN-YYYYMMDD-XXXXXX` (18 karakter):
@@ -192,10 +283,12 @@ npx tsc -p tsconfig.test.json --outDir .test-dist-orders
 TEST_DATABASE_URL=postgresql://...:5544/antriin_orders \
   node --test .test-dist-orders/test/orders.spec.js \
             .test-dist-orders/test/orders-state-machine.spec.js \
-            .test-dist-orders/test/orders-http.spec.js
+            .test-dist-orders/test/orders-http.spec.js \
+            .test-dist-orders/test/orders-refund-cancellation.spec.js \
+            .test-dist-orders/test/orders-tenant-archive.spec.js
 ```
 
-32 test lulus (13 PostgreSQL + 10 PostgreSQL + 9 HTTP kontrak), stabil pada eksekusi berulang dengan ketiga file berjalan paralel:
+42 test lulus (13 + 10 + 7 + 3 PostgreSQL, 9 HTTP kontrak), stabil pada eksekusi berulang dengan kelima file berjalan paralel:
 
 - `test/orders.spec.ts`: graf order lengkap dalam satu transaksi (item/opsi snapshot, payment,
   ledger double-entry, event, audit, outbox, saldo turun tepat total, `reserved_count` +1),
@@ -213,6 +306,15 @@ TEST_DATABASE_URL=postgresql://...:5544/antriin_orders \
   penolakan field asing/harga/total/status dari klien (whitelist global), batas quantity dan
   keranjang, `reason` wajib saat decline, nilai `decision` yang sah, validasi query list, kode
   error 409 yang stabil, dan 401 tanpa bearer token di semua route.
+- `test/orders-refund-cancellation.spec.ts` (7, PostgreSQL): pembatalan oleh keputusan refund dari
+  `paid_awaiting_tenant`/`confirmed`/`preparing`/`ready_for_pickup` (status, `cancelled_at`,
+  reservasi released, event + audit + outbox, `orderPaymentId` benar); penolakan 409 tanpa efek
+  samping untuk `completed`/`cancelled`/`declined`; dua pembatalan paralel -> tepat satu menang;
+  replay tidak menulis event/audit ganda; `reason` wajib; order tak dikenal -> 404.
+- `test/orders-tenant-archive.spec.ts` (3, PostgreSQL): P2-05 — checkout pada tenant yang sudah
+  terarsip -> 404 tanpa order; checkout vs archive paralel -> tepat satu menang (archive 409 bila
+  checkout menang, atau checkout 404 bila archive menang) dan tidak ada order pada tenant
+  terarsip; archive memblokir selama transaksi checkout memegang lock baris tenant.
 
 ## 10. Keputusan, asumsi, dan sisa pekerjaan
 

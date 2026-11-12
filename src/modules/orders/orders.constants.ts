@@ -28,6 +28,17 @@ export const PRE_PRODUCTION_STATUSES: readonly OrderStatus[] = [
 ];
 
 /**
+ * Statuses after which no manager cancellation/refund may be executed: money
+ * has either already been delivered (completed) or the order is already
+ * terminal (cancelled/declined).
+ */
+export const TERMINAL_STATUSES: readonly OrderStatus[] = [
+  'completed',
+  'cancelled',
+  'declined',
+];
+
+/**
  * Idempotency route scope for checkout. Stored verbatim in
  * order_request_idempotency.route_name and part of the unique key with
  * (actor_user_id, key_hash).

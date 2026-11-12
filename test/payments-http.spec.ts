@@ -376,6 +376,87 @@ describe(
       assert.equal(crossDetail.statusCode, 404);
     });
 
+    it('returns 409 when an event id is replayed with a different payload', async () => {
+      const userId = await newUser();
+      const intent = await payments.createTopupIntent(userId, {
+        amountMinor: '50000',
+        idempotencyKey: randomUUID(),
+      });
+      const eventId = randomUUID();
+      const body1: WebhookBody = {
+        eventId,
+        reference: intent.view.providerReference,
+        status: 'succeeded',
+        amountMinor: '50000',
+        currency: 'IDR',
+        occurredAt: new Date().toISOString(),
+      };
+      const first = signed(body1);
+      const res1 = await postWebhook(first.rawStr, first.ts, first.sig);
+      assert.equal(res1.statusCode, 200);
+      assert.equal(res1.json().data.outcome, 'applied');
+      const body2: WebhookBody = { ...body1, amountMinor: '50001' };
+      const second = signed(body2);
+      const res2 = await postWebhook(second.rawStr, second.ts, second.sig);
+      assert.equal(res2.statusCode, 409);
+      assert.equal(res2.json().error.code, 'WEBHOOK_EVENT_CONFLICT');
+      const bal = await wallet.getBalance(userId, 'IDR');
+      assert.equal(
+        bal[0].balanceMinor,
+        '50000',
+        'conflict must not credit again',
+      );
+      const evCount = await pool.query(
+        "select count(*)::int as n from payment_provider_events where provider='sandbox' and event_id=$1",
+        [eventId],
+      );
+      assert.equal(evCount.rows[0].n, 1);
+    });
+
+    it('returns 422 PAYMENT_EVENT_MISMATCH for a succeeded event on a failed intent', async () => {
+      const userId = await newUser();
+      const intent = await payments.createTopupIntent(userId, {
+        amountMinor: '50000',
+        idempotencyKey: randomUUID(),
+      });
+      const failBody: WebhookBody = {
+        eventId: randomUUID(),
+        reference: intent.view.providerReference,
+        status: 'failed',
+        amountMinor: '50000',
+        currency: 'IDR',
+        occurredAt: new Date().toISOString(),
+      };
+      const f = signed(failBody);
+      const res1 = await postWebhook(f.rawStr, f.ts, f.sig);
+      assert.equal(res1.statusCode, 200);
+      const succBody: WebhookBody = {
+        eventId: randomUUID(),
+        reference: intent.view.providerReference,
+        status: 'succeeded',
+        amountMinor: '50000',
+        currency: 'IDR',
+        occurredAt: new Date().toISOString(),
+      };
+      const s = signed(succBody);
+      const res2 = await postWebhook(s.rawStr, s.ts, s.sig);
+      assert.equal(res2.statusCode, 422);
+      assert.equal(res2.json().error.code, 'PAYMENT_EVENT_MISMATCH');
+      const bal = await wallet.getBalance(userId, 'IDR');
+      assert.equal(bal[0].balanceMinor, '0', 'state mismatch must not credit');
+    });
+
+    it('rejects a malformed body with 400 even without signature headers (P2-02 order)', async () => {
+      const res = await webhookApp.inject({
+        method: 'POST',
+        url: '/v1/webhooks/payments/sandbox',
+        headers: { 'content-type': 'application/json' },
+        payload: JSON.stringify({ garbage: true }),
+      });
+      assert.equal(res.statusCode, 400);
+      assert.equal(res.json().error.code, 'VALIDATION_ERROR');
+    });
+
     it('exposes no client route to credit a balance directly', async () => {
       authenticatedUserId = await newUser();
       const intent = await payments.createTopupIntent(authenticatedUserId, {

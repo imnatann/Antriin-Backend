@@ -93,6 +93,12 @@ export const environmentSchema = Joi.object({
     .min(60)
     .max(86400)
     .default(3600),
+  // Refund provider stays processor-driven sandbox-only; production is disabled.
+  REFUNDS_PROVIDER_MODE: Joi.when('NODE_ENV', {
+    is: 'production',
+    then: Joi.string().valid('disabled').default('disabled'),
+    otherwise: Joi.string().valid('disabled', 'sandbox').default('disabled'),
+  }),
   PAYMENTS_SANDBOX_WEBHOOK_SECRET: Joi.when('PAYMENTS_PROVIDER_MODE', {
     is: 'sandbox',
     then: Joi.string().min(32).required(),

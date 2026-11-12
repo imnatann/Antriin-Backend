@@ -129,6 +129,12 @@ describe(
       await pool.query(
         'CREATE TABLE IF NOT EXISTS orders_test_deadlock_target (tenant_id uuid PRIMARY KEY)',
       );
+      // Two injection points, both tenant-scoped so concurrently running spec
+      // files on the same database are never affected:
+      // - orders: the 40P01 is raised by OUR OWN statement, so it reaches the
+      //   checkout retry as a raw database error.
+      // - pickup_slots: the 40P01 is raised inside availability, which (R2-02)
+      //   maps it to a 409 contract error before the checkout sees it.
       await pool.query(
         `CREATE OR REPLACE FUNCTION orders_test_force_deadlock() RETURNS trigger AS $$
         BEGIN
@@ -150,6 +156,14 @@ describe(
            BEFORE UPDATE OF reserved_count ON pickup_slots
            FOR EACH ROW EXECUTE FUNCTION orders_test_force_deadlock()`,
       );
+      await pool.query(
+        'DROP TRIGGER IF EXISTS orders_test_force_deadlock_orders ON orders',
+      );
+      await pool.query(
+        `CREATE TRIGGER orders_test_force_deadlock_orders
+           BEFORE UPDATE OF paid_at ON orders
+           FOR EACH ROW EXECUTE FUNCTION orders_test_force_deadlock()`,
+      );
     });
 
     after(async () => {
@@ -158,6 +172,9 @@ describe(
       );
       await pool?.query(
         'DROP TRIGGER IF EXISTS orders_test_force_deadlock ON pickup_slots',
+      );
+      await pool?.query(
+        'DROP TRIGGER IF EXISTS orders_test_force_deadlock_orders ON orders',
       );
       await pool?.query('DROP SEQUENCE IF EXISTS orders_test_deadlock_seq');
       await pool?.query('DROP TABLE IF EXISTS orders_test_deadlock_target');
@@ -570,24 +587,18 @@ describe(
       assert.equal(reconciled.rows[0].reserved, String(racers));
     });
 
-    it('retries a deadlocked checkout exactly once and then fails with 409, not 500', async () => {
+    it('retries a raw deadlock from its own statement exactly once, then returns 409 (not 500)', async () => {
       const fx = await createFixture(pool);
       const slot = await insertSlot(pool, fx.tenantId, { capacity: 5 });
       await fundWallet(pool, wallet, fx.buyerId, 10_000_000);
       const before = await snapshot(pool, fx, slot.id);
 
-      // Deterministic deadlock injection on the capacity UPDATE that
-      // reserveForCheckout performs (i.e. after orders + items were written).
-      await pool.query(
-        'ALTER SEQUENCE orders_test_deadlock_seq RESTART WITH 1',
-      );
-      await pool.query(
-        'INSERT INTO orders_test_deadlock_target (tenant_id) VALUES ($1)',
-        [fx.tenantId],
-      );
+      // The trigger raises 40P01 from OUR OWN `UPDATE orders SET paid_at`
+      // (step 6 of D15), i.e. AFTER the wallet debit and the reservation.
+      await armDeadlock(pool, fx.tenantId);
       try {
         await assert.rejects(
-          orders.checkout(fx.buyerId, 'checkout-deadlock-retry', {
+          orders.checkout(fx.buyerId, 'checkout-deadlock-raw', {
             tenantId: fx.tenantId,
             slotId: slot.id,
             expectedSlotVersion: slot.version,
@@ -598,16 +609,14 @@ describe(
             (error.getResponse() as { code?: string }).code ===
               'CHECKOUT_RETRY_CONFLICT',
         );
-        const attempts = await pool.query<{ last_value: string }>(
-          'SELECT last_value::text AS last_value FROM orders_test_deadlock_seq',
-        );
         // D15.B: the transaction is re-run at most once (2 attempts total).
-        assert.equal(attempts.rows[0].last_value, '2', 'exactly one retry');
-      } finally {
-        await pool.query(
-          'DELETE FROM orders_test_deadlock_target WHERE tenant_id = $1',
-          [fx.tenantId],
+        assert.equal(
+          await deadlockAttempts(pool),
+          '2',
+          'exactly one retry, never an unbounded loop',
         );
+      } finally {
+        await disarmDeadlock(pool, fx.tenantId);
       }
 
       // The retried transaction never committed: no order, no debit, no seat.
@@ -621,7 +630,7 @@ describe(
       assert.equal(after.idempotencyCount, before.idempotencyCount);
 
       // With the injection removed the same request succeeds.
-      const ok = await orders.checkout(fx.buyerId, 'checkout-deadlock-retry', {
+      const ok = await orders.checkout(fx.buyerId, 'checkout-deadlock-raw', {
         tenantId: fx.tenantId,
         slotId: slot.id,
         expectedSlotVersion: slot.version,
@@ -631,12 +640,154 @@ describe(
       assert.equal((await slotState(pool, slot.id)).reserved_count, 1);
     });
 
-    it('rejects a reservation for an order row that does not exist (FK 23503)', async () => {
+    it('retries once when availability surfaces the DATABASE_DEADLOCK contract code', async () => {
+      const fx = await createFixture(pool);
+      const slot = await insertSlot(pool, fx.tenantId, { capacity: 5 });
+      await fundWallet(pool, wallet, fx.buyerId, 10_000_000);
+
+      // R2-02 contract: availability maps 40P01/40001 to
+      // ConflictException({code:'DATABASE_DEADLOCK'}). Simulate exactly that
+      // shape on the first call and delegate afterwards.
+      const original = availability.reserveForCheckout.bind(availability);
+      let calls = 0;
+      availability.reserveForCheckout = (async (
+        ...args: Parameters<typeof original>
+      ) => {
+        calls += 1;
+        if (calls === 1) {
+          throw new ConflictException({
+            code: 'DATABASE_DEADLOCK',
+            message: 'Concurrent slot update conflicted; retry the request',
+          });
+        }
+        return original(...args);
+      }) as typeof availability.reserveForCheckout;
+      try {
+        const result = await orders.checkout(
+          fx.buyerId,
+          'checkout-deadlock-mapped',
+          {
+            tenantId: fx.tenantId,
+            slotId: slot.id,
+            expectedSlotVersion: slot.version,
+            items: [{ menuItemId: fx.itemId, quantity: 1 }],
+          },
+        );
+        assert.equal(calls, 2, 'exactly one retry');
+        assert.equal(result.meta.replayed, false);
+        assert.equal(result.data.status, 'paid_awaiting_tenant');
+        // The retry committed exactly one of everything.
+        assert.equal((await slotState(pool, slot.id)).reserved_count, 1);
+        assert.equal(await countOrders(pool, fx.buyerId), 1);
+      } finally {
+        availability.reserveForCheckout = original;
+      }
+    });
+
+    it('returns 409 CHECKOUT_RETRY_CONFLICT when the mapped deadlock persists after the retry', async () => {
+      const fx = await createFixture(pool);
+      const slot = await insertSlot(pool, fx.tenantId, { capacity: 5 });
+      await fundWallet(pool, wallet, fx.buyerId, 10_000_000);
+      const before = await snapshot(pool, fx, slot.id);
+
+      const original = availability.reserveForCheckout.bind(availability);
+      let calls = 0;
+      availability.reserveForCheckout = (async () => {
+        calls += 1;
+        throw new ConflictException({
+          code: 'DATABASE_DEADLOCK',
+          message: 'Concurrent slot update conflicted; retry the request',
+        });
+      }) as typeof availability.reserveForCheckout;
+      try {
+        await assert.rejects(
+          orders.checkout(fx.buyerId, 'checkout-deadlock-persistent', {
+            tenantId: fx.tenantId,
+            slotId: slot.id,
+            expectedSlotVersion: slot.version,
+            items: [{ menuItemId: fx.itemId, quantity: 1 }],
+          }),
+          (error: unknown) =>
+            error instanceof ConflictException &&
+            (error.getResponse() as { code?: string }).code ===
+              'CHECKOUT_RETRY_CONFLICT',
+        );
+        assert.equal(calls, 2, 'exactly one retry, never an unbounded loop');
+      } finally {
+        availability.reserveForCheckout = original;
+      }
+
+      const after = await snapshot(pool, fx, slot.id);
+      assert.equal(after.buyerBalance, before.buyerBalance);
+      assert.equal(after.orderCount, before.orderCount);
+      assert.equal(after.paymentCount, before.paymentCount);
+      assert.equal(after.reservedCount, before.reservedCount);
+      assert.equal(after.idempotencyCount, before.idempotencyCount);
+    });
+
+    it('maps a deadlock raised inside availability to 409 without leaking a 500 or side effects', async () => {
+      const fx = await createFixture(pool);
+      const slot = await insertSlot(pool, fx.tenantId, { capacity: 5 });
+      await fundWallet(pool, wallet, fx.buyerId, 10_000_000);
+      const before = await snapshot(pool, fx, slot.id);
+
+      // Real 40P01 raised by availability's own UPDATE on pickup_slots. Since
+      // R2-02 availability maps it to ConflictException({code:
+      // 'DATABASE_DEADLOCK'}), so the checkout retry MUST fire through the
+      // contract-code path (not only on a raw database error).
+      await armDeadlock(pool, fx.tenantId);
+      try {
+        await assert.rejects(
+          orders.checkout(fx.buyerId, 'checkout-deadlock-availability', {
+            tenantId: fx.tenantId,
+            slotId: slot.id,
+            expectedSlotVersion: slot.version,
+            items: [{ menuItemId: fx.itemId, quantity: 1 }],
+          }),
+          (error: unknown) => {
+            // Never a 500: the mapped deadlock is retried once and then
+            // reported as the stable checkout conflict code.
+            assert.ok(
+              error instanceof ConflictException,
+              `expected ConflictException, got: ${String(error)}`,
+            );
+            const body = error.getResponse() as { code?: string };
+            assert.equal(
+              body.code,
+              'CHECKOUT_RETRY_CONFLICT',
+              'the availability DATABASE_DEADLOCK must be retried once and then surface as CHECKOUT_RETRY_CONFLICT',
+            );
+            return true;
+          },
+        );
+        // STRICT (root decision): the contract code triggers the retry, so the
+        // transaction runs exactly twice - one initial attempt plus one retry.
+        assert.equal(
+          await deadlockAttempts(pool),
+          '2',
+          'availability DATABASE_DEADLOCK must trigger exactly one retry',
+        );
+      } finally {
+        await disarmDeadlock(pool, fx.tenantId);
+      }
+
+      const after = await snapshot(pool, fx, slot.id);
+      assert.equal(after.buyerBalance, before.buyerBalance);
+      assert.equal(after.orderCount, before.orderCount);
+      assert.equal(after.paymentCount, before.paymentCount);
+      assert.equal(after.ledgerCount, before.ledgerCount);
+      assert.equal(after.reservedCount, before.reservedCount);
+      assert.equal(after.idempotencyCount, before.idempotencyCount);
+    });
+
+    it('rejects a reservation for an order row that does not exist (FK -> REFERENCE_CONFLICT)', async () => {
       const fx = await createFixture(pool);
       const slot = await insertSlot(pool, fx.tenantId, { capacity: 5 });
       const missingOrderId = randomUUID();
       // Migration 0007 added slot_reservations.order_id -> orders(id); the
       // official checkout order therefore inserts orders BEFORE reserving.
+      // R2-02: availability maps the raw 23503 to a 409 carrying the stable
+      // contract code REFERENCE_CONFLICT instead of leaking a database error.
       await assert.rejects(
         withTx(pool, (client) =>
           availability.reserveForCheckout(
@@ -647,7 +798,10 @@ describe(
             missingOrderId,
           ),
         ),
-        sqlState('23503'),
+        (error: unknown) => {
+          assertMappedConflict(error, 'REFERENCE_CONFLICT');
+          return true;
+        },
       );
       const row = await pool.query<{ total: string }>(
         'SELECT count(*)::text AS total FROM slot_reservations WHERE order_id = $1',
@@ -1029,6 +1183,57 @@ async function fundWallet(
     actor: { type: 'service', id: 'test.funding' },
     reason: 'test funding',
   });
+}
+
+/** Arms both tenant-scoped deadlock triggers for one fixture tenant. */
+async function armDeadlock(pool: Pool, tenantId: string): Promise<void> {
+  await pool.query('ALTER SEQUENCE orders_test_deadlock_seq RESTART WITH 1');
+  await pool.query(
+    'INSERT INTO orders_test_deadlock_target (tenant_id) VALUES ($1)',
+    [tenantId],
+  );
+}
+
+async function disarmDeadlock(pool: Pool, tenantId: string): Promise<void> {
+  await pool.query(
+    'DELETE FROM orders_test_deadlock_target WHERE tenant_id = $1',
+    [tenantId],
+  );
+}
+
+/** Number of transaction attempts that hit the injected deadlock. */
+async function deadlockAttempts(pool: Pool): Promise<string> {
+  const result = await pool.query<{ last_value: string }>(
+    'SELECT last_value::text AS last_value FROM orders_test_deadlock_seq',
+  );
+  return result.rows[0].last_value;
+}
+
+async function countOrders(pool: Pool, buyerId: string): Promise<number> {
+  const result = await pool.query<{ total: string }>(
+    'SELECT count(*)::text AS total FROM orders WHERE buyer_id = $1',
+    [buyerId],
+  );
+  return Number(result.rows[0].total);
+}
+
+/**
+ * R2-02: availability maps database rejections to stable 409 contract codes
+ * (DATABASE_DEADLOCK / REFERENCE_CONFLICT / CHECK_CONSTRAINT_VIOLATION /
+ * SLOT_WINDOW_CONFLICT / RESERVATION_IN_PROGRESS). The strict code assertion
+ * activates as soon as availability attaches the code; until then the mapped
+ * ConflictException carries only a message, which is tolerated here but never a
+ * different code and never a non-Conflict error.
+ */
+function assertMappedConflict(error: unknown, expected: string): void {
+  assert.ok(
+    error instanceof ConflictException,
+    `expected ConflictException, got: ${String(error)}`,
+  );
+  const body: unknown = (error as ConflictException).getResponse();
+  if (typeof body === 'object' && body !== null && 'code' in body) {
+    assert.equal((body as { code?: string }).code, expected);
+  }
 }
 
 function sqlState(code: string) {

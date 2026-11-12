@@ -80,7 +80,8 @@ describe(
         }),
         (error: unknown) =>
           error instanceof ConflictException &&
-          /same window already exists/.test(messageOf(error)),
+          /same window already exists/.test(messageOf(error)) &&
+          contractCodeOf(error) === 'SLOT_WINDOW_CONFLICT',
       );
       await assert.rejects(
         availability.createSlot(fx.ownerId, fx.tenantId, {
@@ -132,6 +133,39 @@ describe(
         }),
         BadRequestException,
       );
+    });
+
+    it('maps a reservation for a missing orders row to REFERENCE_CONFLICT (FK 0007)', async () => {
+      const fx = await createFixture(pool);
+      const slot = await insertSlot(pool, fx.tenantId, {
+        localDate: fx.localDate,
+        capacity: 2,
+      });
+      // No orders row exists for this orderId -> FK slot_reservations_order_fk
+      // rejects the INSERT and the mapper must return a stable 409 contract
+      // code instead of a raw 23503/500 (orders-slice retry logic keys on it).
+      await assert.rejects(
+        withTx(pool, (client) =>
+          availability.reserveForCheckout(
+            client,
+            fx.tenantId,
+            slot.id,
+            slot.version,
+            randomUUID(),
+          ),
+        ),
+        (error: unknown) =>
+          error instanceof ConflictException &&
+          contractCodeOf(error) === 'REFERENCE_CONFLICT' &&
+          /missing order or slot/.test(messageOf(error)),
+      );
+      const row = await readSlot(pool, slot.id);
+      assert.equal(
+        row.reserved_count,
+        0,
+        'failed reserve must not consume a seat',
+      );
+      assert.equal(row.version, slot.version);
     });
 
     it('rejects slots outside operating hours using the D8 read contract', async () => {
@@ -804,6 +838,23 @@ describe(
       );
       assert.equal((await readSlot(pool, slot.id)).reserved_count, 1);
 
+      // R2-11: replaying reserve for a released reservation gives an
+      // actionable conflict, not the misleading "another slot" message.
+      await assert.rejects(
+        withTx(pool, (client) =>
+          availability.reserveForCheckout(
+            client,
+            fx.tenantId,
+            slot.id,
+            slot.version,
+            orderId,
+          ),
+        ),
+        (error: unknown) =>
+          error instanceof ConflictException &&
+          /was released; create a new checkout/.test(messageOf(error)),
+      );
+
       // The released_at CHECK constraint is enforced by PostgreSQL itself.
       await assert.rejects(
         pool.query(
@@ -855,6 +906,22 @@ describe(
       assert.equal(replay, false);
       reservation = await readReservation(pool, orderId);
       assert.equal(reservation.status, 'consumed');
+
+      // R2-11: reserve replay on a consumed reservation is an explicit conflict.
+      await assert.rejects(
+        withTx(pool, (client) =>
+          availability.reserveForCheckout(
+            client,
+            fx.tenantId,
+            slot.id,
+            slot.version,
+            orderId,
+          ),
+        ),
+        (error: unknown) =>
+          error instanceof ConflictException &&
+          /already consumed/.test(messageOf(error)),
+      );
 
       await assert.rejects(
         withTx(pool, (client) =>
@@ -1340,6 +1407,15 @@ async function readAudit(pool: Pool, targetId: string) {
 
 function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+/** Stable contract code carried in the body of mapped ConflictExceptions. */
+function contractCodeOf(error: unknown): string | undefined {
+  if (!(error instanceof ConflictException)) return undefined;
+  const response = error.getResponse();
+  return typeof response === 'object' && response !== null && 'code' in response
+    ? String((response as { code?: unknown }).code)
+    : undefined;
 }
 
 function pgCodeOf(error: unknown): string | undefined {

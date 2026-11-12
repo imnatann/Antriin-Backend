@@ -8,7 +8,10 @@ import type { PoolClient } from 'pg';
 import { DatabaseService } from '../../database/database.service';
 import { AccessService } from '../access/access.service';
 import { AuditService } from '../audit/audit.service';
-import { TenantOperatingHoursService } from '../tenants/tenant-operating-hours.service';
+import {
+  TenantOperatingHoursService,
+  type OperatingWindow,
+} from '../tenants/tenant-operating-hours.service';
 
 export interface SlotQuoteContext {
   slotId: string;
@@ -88,7 +91,13 @@ const DAY_MS = 86_400_000;
 const MAX_BUYER_RANGE_DAYS = 31;
 const MAX_MANAGED_RANGE_DAYS = 92;
 const BUYER_SLOT_LIMIT = 200;
+// R2-05: candidate rows fetched BEFORE the operating-hours filter so the
+// response cap cannot under-report valid slots within the max 31-day range.
+const BUYER_CANDIDATE_LIMIT = 5000;
 const MANAGED_SLOT_LIMIT = 500;
+// R2-06: service-level upper bound mirrors the DTO @Max and PostgreSQL
+// integer, so non-HTTP callers cannot trigger 22003 -> 500.
+const MAX_CAPACITY = 2_147_483_647;
 // D7: timestamps that clients may echo back are emitted by PostgreSQL with
 // microsecond precision; never re-serialize them through new Date().
 const TS = (column: string) =>
@@ -260,17 +269,31 @@ export class AvailabilityService {
           AND starts_at > now() AND reserved_count < capacity
           AND starts_at >= ($2::date::timestamp AT TIME ZONE $4)
           AND starts_at < (($3::date + 1)::timestamp AT TIME ZONE $4)
-        ORDER BY starts_at, id LIMIT ${BUYER_SLOT_LIMIT}`,
+        ORDER BY starts_at, id LIMIT ${BUYER_CANDIDATE_LIMIT}`,
       [tenantId, range.from, range.to, tenant.timezone],
     );
     const available: AvailableSlotView[] = [];
+    // R2-05: the operating-hours filter runs over a candidate set far above
+    // the response cap (so filtering cannot under-report below the cap) and
+    // resolves each distinct local date only once through the D8 contract.
+    const windows = new Map<string, OperatingWindow>();
     for (const slot of slots.rows) {
-      const fits = await this.slotFitsOperatingHours(undefined, {
-        ...slot,
-        tenant_id: tenantId,
-        timezone: tenant.timezone,
-      });
-      if (fits) {
+      let window = windows.get(slot.local_date);
+      if (!window) {
+        window = await this.operatingHours.resolveOperatingWindow(
+          tenantId,
+          slot.local_date,
+        );
+        windows.set(slot.local_date, window);
+      }
+      if (
+        this.slotFitsWindow(
+          slot.starts_at,
+          slot.ends_at,
+          tenant.timezone,
+          window,
+        )
+      ) {
         available.push({
           id: slot.id,
           startsAt: slot.starts_at_text,
@@ -279,6 +302,7 @@ export class AvailabilityService {
           remainingCapacity: slot.capacity - slot.reserved_count,
           version: slot.version,
         });
+        if (available.length >= BUYER_SLOT_LIMIT) break;
       }
     }
     return {
@@ -377,8 +401,14 @@ export class AvailabilityService {
     if (endsAt.getTime() <= startsAt.getTime()) {
       throw new BadRequestException('endsAt must be after startsAt');
     }
-    if (!Number.isSafeInteger(input.capacity) || input.capacity < 1) {
-      throw new BadRequestException('capacity must be a positive integer');
+    if (
+      !Number.isSafeInteger(input.capacity) ||
+      input.capacity < 1 ||
+      input.capacity > MAX_CAPACITY
+    ) {
+      throw new BadRequestException(
+        `capacity must be an integer between 1 and ${MAX_CAPACITY}`,
+      );
     }
     return this.withTransaction(async (client) => {
       await this.access.requireTenant(
@@ -475,9 +505,13 @@ export class AvailabilityService {
     }
     if (
       input.capacity !== undefined &&
-      (!Number.isSafeInteger(input.capacity) || input.capacity < 1)
+      (!Number.isSafeInteger(input.capacity) ||
+        input.capacity < 1 ||
+        input.capacity > MAX_CAPACITY)
     ) {
-      throw new BadRequestException('capacity must be a positive integer');
+      throw new BadRequestException(
+        `capacity must be an integer between 1 and ${MAX_CAPACITY}`,
+      );
     }
     if (
       input.status !== undefined &&
@@ -652,6 +686,28 @@ export class AvailabilityService {
         'expectedVersion must be a positive integer',
       );
     }
+    try {
+      return await this.reserveForCheckoutTx(
+        client,
+        tenantId,
+        slotId,
+        expectedVersion,
+        orderId,
+      );
+    } catch (error) {
+      // R2-02: never leak raw database errors (deadlock 40P01, FK 23503,
+      // CHECK 23514, unique 23505) as 500s; HTTP exceptions pass through.
+      throw this.mapSlotWriteError(error);
+    }
+  }
+
+  private async reserveForCheckoutTx(
+    client: PoolClient,
+    tenantId: string,
+    slotId: string,
+    expectedVersion: number,
+    orderId: string,
+  ): Promise<SlotReservation> {
     // Serialize every mutation path for the same order (reserve/move replay).
     await client.query(
       'SELECT pg_advisory_xact_lock(hashtextextended($1, 0))',
@@ -669,10 +725,21 @@ export class AvailabilityService {
     );
     if (existing.rows[0]) {
       const reservation = existing.rows[0];
+      // R2-11: actionable, state-specific conflicts instead of one
+      // misleading "another slot" message for same-slot replays.
+      if (reservation.status === 'released') {
+        throw new ConflictException(
+          'Reservation for this order was released; create a new checkout',
+        );
+      }
+      if (reservation.status === 'consumed') {
+        throw new ConflictException(
+          'Reservation for this order was already consumed',
+        );
+      }
       if (
         reservation.tenant_id !== tenantId ||
-        reservation.slot_id !== slotId ||
-        reservation.status !== 'reserved'
+        reservation.slot_id !== slotId
       ) {
         throw new ConflictException(
           'Order already has another slot reservation',
@@ -735,23 +802,14 @@ export class AvailabilityService {
     }
     if (updated.rowCount !== 1)
       throw new ConflictException('Pickup slot is full or changed');
-    let reservation;
-    try {
-      reservation = await client.query<{ id: string }>(
-        `INSERT INTO slot_reservations (tenant_id, slot_id, order_id, status)
-         VALUES ($1, $2, $3, 'reserved') RETURNING id`,
-        [tenantId, slotId, orderId],
-      );
-    } catch (error) {
-      // Lost race on slot_reservations_order_unique: a concurrent writer holds
-      // the same order id; surface a replayable conflict instead of a 500.
-      if (this.isUniqueViolation(error, 'slot_reservations_order_unique')) {
-        throw new ConflictException(
-          'Order reservation is already being created',
-        );
-      }
-      throw error;
-    }
+    // Lost races on slot_reservations_order_unique (23505) and FK violations
+    // (23503, missing orders row) are mapped to stable 409 contract codes by
+    // the reserveForCheckout wrapper via mapSlotWriteError.
+    const reservation = await client.query<{ id: string }>(
+      `INSERT INTO slot_reservations (tenant_id, slot_id, order_id, status)
+       VALUES ($1, $2, $3, 'reserved') RETURNING id`,
+      [tenantId, slotId, orderId],
+    );
     return {
       reservationId: reservation.rows[0].id,
       orderId,
@@ -778,6 +836,20 @@ export class AvailabilityService {
   ): Promise<boolean> {
     this.assertUuid(tenantId, 'tenant id');
     this.assertUuid(orderId, 'order id');
+    try {
+      return await this.releaseReservationTx(client, tenantId, orderId);
+    } catch (error) {
+      // R2-02: map database errors (40P01, 23503, 23514) to stable HTTP
+      // contract errors; HTTP exceptions pass through unchanged.
+      throw this.mapSlotWriteError(error);
+    }
+  }
+
+  private async releaseReservationTx(
+    client: PoolClient,
+    tenantId: string,
+    orderId: string,
+  ): Promise<boolean> {
     const result = await client.query<{
       id: string;
       slot_id: string;
@@ -850,6 +922,28 @@ export class AvailabilityService {
         'expectedVersion must be a positive integer',
       );
     }
+    try {
+      return await this.moveReservationTx(
+        client,
+        tenantId,
+        orderId,
+        newSlotId,
+        expectedNewSlotVersion,
+      );
+    } catch (error) {
+      // R2-02: map database errors (40P01, 23503, 23514, 23505) to stable
+      // HTTP contract errors; HTTP exceptions pass through unchanged.
+      throw this.mapSlotWriteError(error);
+    }
+  }
+
+  private async moveReservationTx(
+    client: PoolClient,
+    tenantId: string,
+    orderId: string,
+    newSlotId: string,
+    expectedNewSlotVersion: number,
+  ): Promise<SlotReservation> {
     await client.query(
       'SELECT pg_advisory_xact_lock(hashtextextended($1, 0))',
       [orderId],
@@ -987,6 +1081,19 @@ export class AvailabilityService {
   ): Promise<boolean> {
     this.assertUuid(tenantId, 'tenant id');
     this.assertUuid(orderId, 'order id');
+    try {
+      return await this.consumeReservationTx(client, tenantId, orderId);
+    } catch (error) {
+      // R2-02: map database errors to stable HTTP contract errors.
+      throw this.mapSlotWriteError(error);
+    }
+  }
+
+  private async consumeReservationTx(
+    client: PoolClient,
+    tenantId: string,
+    orderId: string,
+  ): Promise<boolean> {
     const result = await client.query<{ id: string; status: string }>(
       `SELECT id, status FROM slot_reservations
         WHERE order_id = $1 AND tenant_id = $2 FOR UPDATE`,
@@ -1064,9 +1171,6 @@ export class AvailabilityService {
     slot: Pick<SlotRow, 'starts_at' | 'ends_at' | 'timezone' | 'tenant_id'>,
   ): Promise<boolean> {
     const start = this.localDateTime(slot.starts_at, slot.timezone);
-    const end = this.localDateTime(slot.ends_at, slot.timezone);
-    // A slot must start and end inside the same local day, strictly forward.
-    if (start.date !== end.date || start.time >= end.time) return false;
     // D8: operating-hours truth comes exclusively from the tenant-campus
     // slice contract (TenantsModule export); this module never queries
     // tenant_operating_hours / tenant_operating_hour_overrides itself.
@@ -1075,6 +1179,28 @@ export class AvailabilityService {
       start.date,
       client,
     );
+    return this.slotFitsWindow(
+      slot.starts_at,
+      slot.ends_at,
+      slot.timezone,
+      window,
+    );
+  }
+
+  /**
+   * A slot must start and end inside the same tenant-local day, strictly
+   * forward, and fit within the resolved operating window (R2-05: shared by
+   * the single-slot checks and the cached buyer-listing filter).
+   */
+  private slotFitsWindow(
+    startsAt: Date,
+    endsAt: Date,
+    timezone: string,
+    window: OperatingWindow,
+  ): boolean {
+    const start = this.localDateTime(startsAt, timezone);
+    const end = this.localDateTime(endsAt, timezone);
+    if (start.date !== end.date || start.time >= end.time) return false;
     if (!window.isOpen || !window.opensAt || !window.closesAt) return false;
     return start.time >= window.opensAt && end.time <= window.closesAt;
   }
@@ -1204,28 +1330,60 @@ export class AvailabilityService {
   }
 
   /**
-   * Maps database constraint rejections on slot writes to stable HTTP contract
-   * errors instead of 500s: duplicate tenant+window (unique index) and
-   * capacity/window CHECK violations (defense in depth; the service validates
-   * both before writing).
+   * Maps database rejections on slot/reservation writes to stable HTTP
+   * contract errors instead of 500s (R2-02). Every mapped ConflictException
+   * carries a stable contract `code` in its body (root decision) so other
+   * slices (orders retry logic) and tests can branch on it:
+   * - 23505 pickup_slots_tenant_window_uq -> 409 SLOT_WINDOW_CONFLICT
+   * - 23505 slot_reservations_order_unique -> 409 RESERVATION_IN_PROGRESS
+   * - 23514 CHECK (capacity/window/released_at/consumed_at)
+   *   -> 409 CHECK_CONSTRAINT_VIOLATION
+   * - 23503 FK (slot_reservations_order_fk 0007 / tenant_slot)
+   *   -> 409 REFERENCE_CONFLICT (the orders row must exist before reserving)
+   * - 40P01 deadlock / 40001 serialization failure -> 409 DATABASE_DEADLOCK
+   *   (retryable; PostgreSQL aborted the transaction, retry is safe)
+   * Anything else (including Nest HttpExceptions) passes through unchanged.
    */
   private mapSlotWriteError(error: unknown): Error {
     if (this.isUniqueViolation(error, 'pickup_slots_tenant_window_uq')) {
-      return new ConflictException(
-        'A pickup slot with the same window already exists',
-      );
+      return new ConflictException({
+        code: 'SLOT_WINDOW_CONFLICT',
+        message: 'A pickup slot with the same window already exists',
+      });
     }
-    if (
-      typeof error === 'object' &&
-      error !== null &&
-      'code' in error &&
-      (error as { code?: string }).code === '23514'
-    ) {
-      return new ConflictException(
-        'Pickup slot change violates capacity or window constraints',
-      );
+    if (this.isUniqueViolation(error, 'slot_reservations_order_unique')) {
+      return new ConflictException({
+        code: 'RESERVATION_IN_PROGRESS',
+        message: 'Order reservation is already being created',
+      });
+    }
+    const code = this.pgCode(error);
+    if (code === '23514') {
+      return new ConflictException({
+        code: 'CHECK_CONSTRAINT_VIOLATION',
+        message: 'Pickup slot change violates capacity or window constraints',
+      });
+    }
+    if (code === '23503') {
+      return new ConflictException({
+        code: 'REFERENCE_CONFLICT',
+        message:
+          'Reservation references a missing order or slot; re-create the checkout',
+      });
+    }
+    if (code === '40P01' || code === '40001') {
+      return new ConflictException({
+        code: 'DATABASE_DEADLOCK',
+        message: 'Concurrent slot update conflicted; retry the request',
+      });
     }
     return error instanceof Error ? error : new Error(String(error));
+  }
+
+  private pgCode(error: unknown): string | undefined {
+    return typeof error === 'object' && error !== null && 'code' in error
+      ? String((error as { code?: unknown }).code)
+      : undefined;
   }
 
   private async withTransaction<T>(

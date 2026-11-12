@@ -961,17 +961,29 @@ describe('Catalog PostgreSQL integration', { skip: !testDatabaseUrl }, () => {
       );
     }
     await assert.rejects(run([]), /1 to 50 menu items/);
+    // Root R2-10: duplicate menu item lines ARE allowed (realistic cart:
+    // 2x nasi sambal + 1x nasi tanpa sambal).
+    const duplicated = await run([
+      {
+        menuItemId: active.itemId,
+        quantity: 1,
+        optionIds: [choiceOne.data.id],
+      },
+      {
+        menuItemId: active.itemId,
+        quantity: 1,
+        optionIds: [choiceOne.data.id],
+      },
+    ]);
+    assert.equal(duplicated.items.length, 2);
+    assert.equal(duplicated.subtotalMinor, '18000');
+    // Duplicate OPTION ids within one line remain invalid.
     await assert.rejects(
       run([
         {
           menuItemId: active.itemId,
           quantity: 1,
-          optionIds: [choiceOne.data.id],
-        },
-        {
-          menuItemId: active.itemId,
-          quantity: 1,
-          optionIds: [choiceOne.data.id],
+          optionIds: [choiceOne.data.id, choiceOne.data.id],
         },
       ]),
       /Invalid quote line/,
@@ -1269,28 +1281,175 @@ describe('Catalog PostgreSQL integration', { skip: !testDatabaseUrl }, () => {
     assert.ok(ids.includes(itemId));
   });
 
+  it('allows duplicate item lines and keeps quoteHash canonical (root R2-10)', async () => {
+    const { itemId } = await seedItem(tenantA, ownerA, { priceMinor: '10000' });
+    const group = await catalog.createOptionGroup(ownerA, tenantA, itemId, {
+      name: 'Tambahan',
+      minSelections: 0,
+      maxSelections: 2,
+    });
+    const extra = await catalog.createOptionChoice(
+      ownerA,
+      tenantA,
+      group.data.id,
+      { name: 'Telur', priceDeltaMinor: '2500' },
+    );
+    const quoteOnce = async (
+      lines: { menuItemId: string; quantity: number; optionIds: string[] }[],
+    ) => {
+      const client = await pool.connect();
+      try {
+        await client.query('BEGIN');
+        const quote = await catalog.quote(client, tenantA, slotA, lines);
+        await client.query('ROLLBACK');
+        return quote;
+      } finally {
+        client.release();
+      }
+    };
+    const plain = { menuItemId: itemId, quantity: 1, optionIds: [] };
+    const withEgg = {
+      menuItemId: itemId,
+      quantity: 1,
+      optionIds: [extra.data.id],
+    };
+
+    const first = await quoteOnce([plain, withEgg]);
+    // 10000 + (10000 + 2500) = 22500
+    assert.equal(first.subtotalMinor, '22500');
+    assert.equal(first.totalMinor, '22500');
+    // Response keeps request order...
+    assert.deepEqual(
+      first.items.map((line) => line.options.length),
+      [0, 1],
+    );
+    // ...while the hash is canonical: reordering duplicate-item lines with
+    // different options must not change it (tie-breaker: optionIds+quantity).
+    const reordered = await quoteOnce([withEgg, plain]);
+    assert.deepEqual(
+      reordered.items.map((line) => line.options.length),
+      [1, 0],
+    );
+    assert.equal(reordered.quoteHash, first.quoteHash);
+    // A genuinely different duplicate cart hashes differently.
+    const doubled = await quoteOnce([withEgg, withEgg]);
+    assert.equal(doubled.subtotalMinor, '25000');
+    assert.notEqual(doubled.quoteHash, first.quoteHash);
+  });
+
+  it('survives repeated concurrent quote + option mutation rounds (no 40P01)', async () => {
+    const { itemId } = await seedItem(tenantA, ownerA, { priceMinor: '20000' });
+    const group = await catalog.createOptionGroup(ownerA, tenantA, itemId, {
+      name: 'Sambal',
+      minSelections: 1,
+      maxSelections: 1,
+    });
+    const choice = await catalog.createOptionChoice(
+      ownerA,
+      tenantA,
+      group.data.id,
+      { name: 'Sedang', priceDeltaMinor: '1000' },
+    );
+    let choiceVersion = choice.data.version;
+    for (let round = 1; round <= 8; round += 1) {
+      const quoteRun = (async () => {
+        const client = await pool.connect();
+        try {
+          await client.query('BEGIN');
+          await client.query("SET LOCAL lock_timeout = '2s'");
+          const quote = await catalog.quote(client, tenantA, slotA, [
+            { menuItemId: itemId, quantity: 1, optionIds: [choice.data.id] },
+          ]);
+          await client.query('ROLLBACK');
+          return quote;
+        } finally {
+          client.release();
+        }
+      })();
+      const mutation = catalog.updateOptionChoice(
+        ownerA,
+        tenantA,
+        choice.data.id,
+        {
+          priceDeltaMinor: String(1000 + round),
+          expectedVersion: choiceVersion,
+          reason: `Stress round ${round}`,
+        },
+      );
+      const [quoteResult, mutationResult] = await Promise.allSettled([
+        quoteRun,
+        mutation,
+      ]);
+      assert.equal(
+        quoteResult.status,
+        'fulfilled',
+        `round ${round} quote rejected: ${String(
+          (quoteResult as PromiseRejectedResult).reason,
+        )}`,
+      );
+      assert.equal(
+        mutationResult.status,
+        'fulfilled',
+        `round ${round} mutation rejected: ${String(
+          (mutationResult as PromiseRejectedResult).reason,
+        )}`,
+      );
+      const updated = (
+        mutationResult as PromiseFulfilledResult<{
+          data: { version: number; priceDeltaMinor: string };
+        }>
+      ).value;
+      choiceVersion = updated.data.version;
+      assert.equal(choiceVersion, choice.data.version + round);
+      assert.equal(updated.data.priceDeltaMinor, String(1000 + round));
+    }
+  });
+
   it('quote and catalog mutations never lock each other (root 40P01 fix)', async () => {
     const { itemId } = await seedItem(tenantA, ownerA, { priceMinor: '8000' });
+    const group = await catalog.createOptionGroup(ownerA, tenantA, itemId, {
+      name: 'Sambal',
+      minSelections: 1,
+      maxSelections: 1,
+    });
+    const choice = await catalog.createOptionChoice(
+      ownerA,
+      tenantA,
+      group.data.id,
+      { name: 'Sedang', priceDeltaMinor: '500' },
+    );
+    // seed(1) + group bump(2) + choice bump(3)
+    assert.equal(await readItemVersion(itemId), 3);
 
-    // Direction 1 (repro): a catalog mutation already holds FOR UPDATE on the
-    // item row; a quote touching the same item must not queue behind it.
+    // Direction 1 (repro per review R2-01): a catalog mutation already holds
+    // FOR UPDATE on the item, group AND choice rows; a quote touching the same
+    // rows must not queue behind any of them.
     const holder = await pool.connect();
     try {
       await holder.query('BEGIN');
       await holder.query('SELECT id FROM menu_items WHERE id = $1 FOR UPDATE', [
         itemId,
       ]);
+      await holder.query(
+        'SELECT id FROM menu_option_groups WHERE id = $1 FOR UPDATE',
+        [group.data.id],
+      );
+      await holder.query(
+        'SELECT id FROM menu_option_choices WHERE id = $1 FOR UPDATE',
+        [choice.data.id],
+      );
       const client = await pool.connect();
       try {
         await client.query('BEGIN');
         await client.query("SET LOCAL lock_timeout = '2s'");
         const startedAt = Date.now();
         const quote = await catalog.quote(client, tenantA, slotA, [
-          { menuItemId: itemId, quantity: 1, optionIds: [] },
+          { menuItemId: itemId, quantity: 1, optionIds: [choice.data.id] },
         ]);
         const elapsedMs = Date.now() - startedAt;
         await client.query('ROLLBACK');
         assert.equal(quote.items[0].menuItemId, itemId);
+        assert.equal(quote.items[0].unitPriceMinor, '8500');
         assert.ok(
           elapsedMs < 1500,
           `quote waited ${elapsedMs}ms behind a catalog mutation`,
@@ -1309,7 +1468,7 @@ describe('Catalog PostgreSQL integration', { skip: !testDatabaseUrl }, () => {
     try {
       await quoter.query('BEGIN');
       await catalog.quote(quoter, tenantA, slotA, [
-        { menuItemId: itemId, quantity: 1, optionIds: [] },
+        { menuItemId: itemId, quantity: 1, optionIds: [choice.data.id] },
       ]);
       // Transaction intentionally left open here.
       const updater = await pool.connect();
@@ -1320,13 +1479,13 @@ describe('Catalog PostgreSQL integration', { skip: !testDatabaseUrl }, () => {
         const bumped = await updater.query(
           `UPDATE menu_items
               SET price_minor = '8500', version = version + 1, updated_at = now()
-            WHERE tenant_id = $1 AND id = $2 AND version = 1
+            WHERE tenant_id = $1 AND id = $2 AND version = 3
             RETURNING version`,
           [tenantA, itemId],
         );
         const elapsedMs = Date.now() - startedAt;
         await updater.query('COMMIT');
-        assert.equal(bumped.rows[0].version, 2);
+        assert.equal(bumped.rows[0].version, 4);
         assert.ok(
           elapsedMs < 1500,
           `catalog mutation waited ${elapsedMs}ms behind an open quote`,
@@ -1343,14 +1502,14 @@ describe('Catalog PostgreSQL integration', { skip: !testDatabaseUrl }, () => {
     // Business behavior unchanged: optimistic concurrency still enforced.
     const viaService = await catalog.updateMenuItem(ownerA, tenantA, itemId, {
       priceMinor: '9000',
-      expectedVersion: 2,
+      expectedVersion: 4,
       reason: 'Post-fix consistency check',
     });
-    assert.equal(viaService.data.version, 3);
+    assert.equal(viaService.data.version, 5);
     await assert.rejects(
       catalog.updateMenuItem(ownerA, tenantA, itemId, {
         priceMinor: '9500',
-        expectedVersion: 2,
+        expectedVersion: 4,
         reason: 'Stale retry must conflict',
       }),
       (error: unknown) => {

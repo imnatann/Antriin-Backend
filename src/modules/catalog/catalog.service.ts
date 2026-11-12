@@ -3,7 +3,9 @@ import {
   BadRequestException,
   ConflictException,
   Injectable,
+  InternalServerErrorException,
   NotFoundException,
+  ServiceUnavailableException,
 } from '@nestjs/common';
 import type { PoolClient } from 'pg';
 import { DatabaseService } from '../../database/database.service';
@@ -215,6 +217,19 @@ export interface UpdateOptionChoiceInput {
   expectedVersion: number;
 }
 
+/**
+ * Deterministic identity of a quote line for hash canonicalization. Duplicate
+ * menu items (same item, different options/quantity) stay distinguishable and
+ * line reordering never changes the hash. Options are already sorted by
+ * (groupId, choiceId) inside the line snapshot.
+ */
+const canonicalLineKey = (line: QuoteLineSnapshot): string =>
+  [
+    line.menuItemId,
+    line.options.map((option) => option.id).join(','),
+    line.quantity.toString(),
+  ].join('|');
+
 type CatalogAuditTarget =
   'menu_category' | 'menu_item' | 'menu_option_group' | 'menu_option_choice';
 
@@ -391,7 +406,9 @@ export class CatalogService {
     const tenant = tenantResult.rows[0];
     if (!tenant) throw new ConflictException('Tenant is not accepting orders');
 
-    const itemIds = items.map((item) => item.menuItemId);
+    // Duplicate lines are allowed (root R2-10: a realistic cart can order the
+    // same item twice with different options); queries use the unique id set.
+    const itemIds = [...new Set(items.map((item) => item.menuItemId))];
     const itemResult = await client.query<CatalogItemRow>(
       `SELECT mi.id, mi.category_id, cat.name AS category_name, mi.name,
               mi.description, mi.price_minor::text, mi.version
@@ -545,7 +562,7 @@ export class CatalogService {
         JSON.stringify({
           ...snapshot,
           items: [...lines].sort((a, b) =>
-            a.menuItemId.localeCompare(b.menuItemId),
+            canonicalLineKey(a).localeCompare(canonicalLineKey(b)),
           ),
         }),
       )
@@ -839,58 +856,75 @@ export class CatalogService {
 
   async listAdminMenu(actorUserId: string, tenantId: string) {
     this.assertUuid(tenantId, 'tenantId');
-    await this.access.requireTenant(
-      actorUserId,
-      tenantId,
-      'tenant.menu.manage',
-    );
-    const [categories, items, groups, choices] = await Promise.all([
-      this.database.pool.query<CategoryDbRow>(
-        `SELECT id, tenant_id, name, sort_order, status, ${TS_SELECT}
-           FROM menu_categories WHERE tenant_id = $1
-          ORDER BY sort_order, id LIMIT $2`,
-        [tenantId, MAX_ADMIN_ROWS],
-      ),
-      this.database.pool.query<MenuItemDbRow>(
-        `SELECT ${ITEM_SELECT}
-           FROM menu_items WHERE tenant_id = $1
-          ORDER BY name, id LIMIT $2`,
-        [tenantId, MAX_ADMIN_ROWS],
-      ),
-      this.database.pool.query<OptionGroupDbRow>(
-        `SELECT id, tenant_id, menu_item_id, name, min_selections,
-                max_selections, sort_order, status, version, ${TS_SELECT}
-           FROM menu_option_groups WHERE tenant_id = $1
-          ORDER BY menu_item_id, sort_order, id LIMIT $2`,
-        [tenantId, MAX_ADMIN_ROWS],
-      ),
-      this.database.pool.query<OptionChoiceDbRow>(
-        `SELECT choice.id, choice.tenant_id, choice.group_id, choice.name,
-                choice.price_delta_minor::text, choice.status, choice.version,
-                to_char(choice.created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS created_at,
-                to_char(choice.updated_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS updated_at
-           FROM menu_option_choices choice
-          WHERE choice.tenant_id = $1
-          ORDER BY choice.group_id, choice.id LIMIT $2`,
-        [tenantId, MAX_ADMIN_ROWS],
-      ),
-    ]);
-    return {
-      data: {
+    // Single transaction on one client (review R2-07): the permission check
+    // and every read share the same snapshot, so a concurrent revoke cannot
+    // slip between the check and the queries (TOCTOU).
+    return this.withTransaction(async (client) => {
+      await this.access.requireTenant(
+        actorUserId,
         tenantId,
-        categories: categories.rows.map((row) => this.mapCategory(row)),
-        items: items.rows.map((row) => this.mapItem(row)),
-        optionGroups: groups.rows.map((row) => this.mapGroup(row)),
-        optionChoices: choices.rows.map((row) => this.mapChoice(row)),
-      },
-      meta: {
-        truncated:
-          categories.rows.length >= MAX_ADMIN_ROWS ||
-          items.rows.length >= MAX_ADMIN_ROWS ||
-          groups.rows.length >= MAX_ADMIN_ROWS ||
-          choices.rows.length >= MAX_ADMIN_ROWS,
-      },
-    };
+        'tenant.menu.manage',
+        client,
+      );
+      // LIMIT n+1 so truncation is detected by an overflow row (R2-08),
+      // matching the buyer discovery pattern.
+      const limit = MAX_ADMIN_ROWS + 1;
+      const [categories, items, groups, choices] = await Promise.all([
+        client.query<CategoryDbRow>(
+          `SELECT id, tenant_id, name, sort_order, status, ${TS_SELECT}
+             FROM menu_categories WHERE tenant_id = $1
+            ORDER BY sort_order, id LIMIT $2`,
+          [tenantId, limit],
+        ),
+        client.query<MenuItemDbRow>(
+          `SELECT ${ITEM_SELECT}
+             FROM menu_items WHERE tenant_id = $1
+            ORDER BY name, id LIMIT $2`,
+          [tenantId, limit],
+        ),
+        client.query<OptionGroupDbRow>(
+          `SELECT id, tenant_id, menu_item_id, name, min_selections,
+                  max_selections, sort_order, status, version, ${TS_SELECT}
+             FROM menu_option_groups WHERE tenant_id = $1
+            ORDER BY menu_item_id, sort_order, id LIMIT $2`,
+          [tenantId, limit],
+        ),
+        client.query<OptionChoiceDbRow>(
+          `SELECT choice.id, choice.tenant_id, choice.group_id, choice.name,
+                  choice.price_delta_minor::text, choice.status, choice.version,
+                  to_char(choice.created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS created_at,
+                  to_char(choice.updated_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS updated_at
+             FROM menu_option_choices choice
+            WHERE choice.tenant_id = $1
+            ORDER BY choice.group_id, choice.id LIMIT $2`,
+          [tenantId, limit],
+        ),
+      ]);
+      const page = <T>(rows: readonly T[]) => ({
+        rows: rows.slice(0, MAX_ADMIN_ROWS),
+        truncated: rows.length > MAX_ADMIN_ROWS,
+      });
+      const categoryPage = page(categories.rows);
+      const itemPage = page(items.rows);
+      const groupPage = page(groups.rows);
+      const choicePage = page(choices.rows);
+      return {
+        data: {
+          tenantId,
+          categories: categoryPage.rows.map((row) => this.mapCategory(row)),
+          items: itemPage.rows.map((row) => this.mapItem(row)),
+          optionGroups: groupPage.rows.map((row) => this.mapGroup(row)),
+          optionChoices: choicePage.rows.map((row) => this.mapChoice(row)),
+        },
+        meta: {
+          truncated:
+            categoryPage.truncated ||
+            itemPage.truncated ||
+            groupPage.truncated ||
+            choicePage.truncated,
+        },
+      };
+    });
   }
 
   async createCategory(
@@ -1825,7 +1859,7 @@ export class CatalogService {
       return result;
     } catch (error) {
       await client.query('ROLLBACK');
-      throw error;
+      throw this.mapDatabaseError(error);
     } finally {
       client.release();
     }
@@ -1842,11 +1876,9 @@ export class CatalogService {
     if (!Array.isArray(items) || items.length < 1 || items.length > 50) {
       throw new BadRequestException('Quote must contain 1 to 50 menu items');
     }
-    const ids = new Set<string>();
     for (const item of items) {
       if (
         !UUID_PATTERN.test(item.menuItemId) ||
-        ids.has(item.menuItemId) ||
         !Array.isArray(item.optionIds) ||
         item.optionIds.length > 50 ||
         new Set(item.optionIds).size !== item.optionIds.length ||
@@ -1866,13 +1898,15 @@ export class CatalogService {
           `Quote line quantity must be an integer between 1 and ${MAX_QUOTE_LINE_QUANTITY}`,
         );
       }
-      ids.add(item.menuItemId);
     }
   }
 
   private parseMinor(value: string): bigint {
     if (!/^(0|[1-9]\d{0,37})$/.test(value)) {
-      throw new ConflictException('Menu price is invalid');
+      // Only reachable when stored data violates the money contract (the DB
+      // CHECK makes that near-impossible): corrupt data is a server fault,
+      // not a client conflict (review R2-09).
+      throw new InternalServerErrorException('Menu price data is corrupt');
     }
     return BigInt(value);
   }
@@ -2075,18 +2109,46 @@ export class CatalogService {
   }
 
   private mapWriteError(error: unknown, uniqueMessage: string): unknown {
-    if (this.isUniqueViolation(error))
+    if (this.pgErrorCode(error) === '23505')
       return new ConflictException(uniqueMessage);
+    return this.mapDatabaseError(error);
+  }
+
+  /**
+   * Maps known PostgreSQL failure codes onto the HTTP error contract so a
+   * DatabaseError never surfaces as an opaque 500 (review R2-02):
+   * - 40P01 deadlock_detected -> 503 retryable (transient write contention)
+   * - 23503 foreign_key_violation -> 409 (reference left the tenant scope)
+   * - 23514 check_violation -> 400 (value violates a database constraint)
+   */
+  private mapDatabaseError(error: unknown): unknown {
+    const code = this.pgErrorCode(error);
+    if (code === '40P01')
+      return new ServiceUnavailableException({
+        code: 'DATABASE_DEADLOCK',
+        message: 'Concurrent write conflict; retry the request',
+        retryAfterSeconds: 1,
+      });
+    if (code === '23503')
+      return new ConflictException({
+        code: 'REFERENCE_CONFLICT',
+        message: 'The referenced record is not available in this tenant scope',
+      });
+    if (code === '23514')
+      return new BadRequestException({
+        code: 'CHECK_CONSTRAINT_VIOLATION',
+        message: 'Value violates a database constraint',
+      });
     return error;
   }
 
-  private isUniqueViolation(error: unknown): boolean {
-    return (
-      typeof error === 'object' &&
+  private pgErrorCode(error: unknown): string | undefined {
+    return typeof error === 'object' &&
       error !== null &&
       'code' in error &&
-      (error as { code?: string }).code === '23505'
-    );
+      typeof (error as { code?: unknown }).code === 'string'
+      ? (error as { code: string }).code
+      : undefined;
   }
 
   private mapCategory(row: CategoryDbRow): CategoryView {
