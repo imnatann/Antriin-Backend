@@ -1,4 +1,11 @@
 import { Module } from '@nestjs/common';
-// Domain scaffold; endpoints and authorization follow docs/REQUIREMENTS-API.md.
-@Module({})
+import { DatabaseModule } from '../../database/database.module';
+import { CampusesController } from './campuses.controller';
+import { CampusesService } from './campuses.service';
+@Module({
+  imports: [DatabaseModule],
+  controllers: [CampusesController],
+  providers: [CampusesService],
+  exports: [CampusesService],
+})
 export class CampusesModule {}

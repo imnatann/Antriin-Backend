@@ -19,7 +19,7 @@ Checkpoint 12 November 2026 dibuat atas permintaan pengguna sebelum batas penggu
 | Order/pickup, `backend_scope`                | Hanya draft `schema/orders.ts`; belum service/controller/tests/docs/migrasi                                                                      | Review FK slot/tenant/campus dan snapshot; implement checkout/state/proposal/pickup secara bertahap                                                                                |
 | Payments, `quality_baseline`                 | Hanya draft `schema/payments.ts` untuk topup intents, request outbox dan provider events                                                         | Implement adapter stub, request processor, HTTP intent/webhook, konfigurasi/raw body, tests/migration/docs                                                                         |
 
-Ketiga schema WIP belum diekspor dari `src/database/schema/index.ts`, belum menghasilkan migrasi dan belum diuji terhadap PostgreSQL. Root memperbaiki satu TS7006 callback validasi quote saat menyimpan; hasil typecheck WIP dicatat terpisah, bukan penerimaan integrasi. Modul campus/tenant/availability sudah mempunyai wiring WIP yang membutuhkan schema tersebut; jangan menggunakan branch WIP sebagai aplikasi operasional.
+Ketiga schema WIP belum diekspor dari `src/database/schema/index.ts`, belum menghasilkan migrasi dan belum diuji terhadap PostgreSQL. Root memperbaiki satu TS7006 callback validasi quote dan dua unused import saat menyimpan. Typecheck WIP lulus; hasil ini bukan penerimaan integrasi dan draft belum diuji pada PostgreSQL. Modul campus/tenant/availability sudah mempunyai wiring WIP yang membutuhkan schema tersebut; jangan menggunakan branch WIP sebagai aplikasi operasional.
 
 ## Kontrak antar implementer
 
