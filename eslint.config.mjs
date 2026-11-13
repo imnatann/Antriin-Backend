@@ -8,6 +8,7 @@ export default tseslint.config(
       'drizzle/**',
       'coverage/**',
       '.test-dist/**',
+      '.test-dist*/**',
     ],
   },
   js.configs.recommended,

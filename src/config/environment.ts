@@ -53,4 +53,61 @@ export const environmentSchema = Joi.object({
     .min(1)
     .max(10)
     .default(5),
+  // Order/schedule proposal policy (pilot). Expiry never auto-accepts a proposal
+  // and never starts production; preparation stays an explicit authorized action.
+  ORDER_PROPOSAL_TTL_SECONDS: Joi.number()
+    .integer()
+    .min(60)
+    .max(3600)
+    .default(600),
+  ORDER_PREPARATION_LEAD_SECONDS: Joi.number()
+    .integer()
+    .min(0)
+    .max(7200)
+    .default(900),
+  PICKUP_CREDENTIAL_TTL_SECONDS: Joi.number()
+    .integer()
+    .min(300)
+    .max(86400)
+    .default(7200),
+  // Top-up payments stay provider-disabled until real credentials/contracts exist.
+  // Production refuses sandbox mode; sandbox requires an independent webhook secret.
+  PAYMENTS_PROVIDER_MODE: Joi.when('NODE_ENV', {
+    is: 'production',
+    then: Joi.string().valid('disabled').default('disabled'),
+    otherwise: Joi.string().valid('disabled', 'sandbox').default('disabled'),
+  }),
+  PAYMENTS_TOPUP_MIN_MINOR: Joi.number()
+    .integer()
+    .min(1)
+    .max(100000000)
+    .default(1000),
+  PAYMENTS_TOPUP_MAX_MINOR: Joi.number()
+    .integer()
+    .min(Joi.ref('PAYMENTS_TOPUP_MIN_MINOR'))
+    .max(100000000)
+    .default(2000000),
+  // Payout provider stays sandbox-only; production is disabled (D18 Q10).
+  PAYOUTS_PROVIDER_MODE: Joi.when('NODE_ENV', {
+    is: 'production',
+    then: Joi.string().valid('disabled').default('disabled'),
+    otherwise: Joi.string().valid('disabled', 'sandbox').default('disabled'),
+  }),
+  // Sandbox top-up intent lifetime; expiry is informational (no sweeper yet).
+  PAYMENTS_SANDBOX_TOPUP_TTL_SECONDS: Joi.number()
+    .integer()
+    .min(60)
+    .max(86400)
+    .default(3600),
+  // Refund provider stays processor-driven sandbox-only; production is disabled.
+  REFUNDS_PROVIDER_MODE: Joi.when('NODE_ENV', {
+    is: 'production',
+    then: Joi.string().valid('disabled').default('disabled'),
+    otherwise: Joi.string().valid('disabled', 'sandbox').default('disabled'),
+  }),
+  PAYMENTS_SANDBOX_WEBHOOK_SECRET: Joi.when('PAYMENTS_PROVIDER_MODE', {
+    is: 'sandbox',
+    then: Joi.string().min(32).required(),
+    otherwise: Joi.string().allow('').optional(),
+  }),
 });

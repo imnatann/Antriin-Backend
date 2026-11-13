@@ -18,6 +18,81 @@ Pemeriksaan checkpoint: `npm run test:integration` telah menerapkan migrasi dari
 
 `.env` lokal tidak diubah dan tidak dipakai sebagai target migrasi. Container uji menggunakan nama unik, port loopback dan data sementara; runner membersihkan hanya container miliknya. Uji provider memakai port terkontrol; ini bukan bukti pengiriman WhatsApp/email, QRIS nyata, refund bank atau payout production.
 
+## Status implementasi 12 November 2026 (sesi orkestrasi DSH)
+
+Ringkasan keadaan nyata setelah wave 1, wave 2a dan pickup. Bukti terakhir: `npm run test:integration` menerapkan migrasi `0000..0008` pada PostgreSQL baru dan menjalankan **231/231 tes** dengan Redis/BullMQ nyata, tanpa skip; typecheck, lint, format dan build lulus.
+
+| Slice                                 | Commit    | Bukti                                                                                                    |
+| ------------------------------------- | --------- | -------------------------------------------------------------------------------------------------------- |
+| Schema 0006 (katalog/order/payment)   | `3c72799` | 39 tabel, 54 FK; 44/44 tes baseline                                                                      |
+| Schema 0007 (integritas hasil review) | `52fbf75` | 9 FK, 4 UNIQUE, 2 PK, 15 kolom, 15 CHECK; 15/15 tes integritas + 40/40 regresi                           |
+| Wave 1 + orders                       | `e677798` | katalog, availability, tenant/kampus, payments, checkout/proposal; 189/189                               |
+| Schema 0008 (kasus/refund)            | `7203b30` | 4 tabel + dedupe provider refund; 43 tabel, 80 FK                                                        |
+| Perbaikan review wave 1               | `56b4d1d` | deadlock katalog, kode kontrak error, audit slot, retry orders, write-skew, liveness dispatcher payments |
+| Pickup                                | `0e35827` | kredensial hash + handover sekali; 11 tes PostgreSQL                                                     |
+| Ketegasan kontrak retry orders        | `c71ab28` | 16/16 tes checkout                                                                                       |
+
+Laporan review independen tersimpan di [reviews/](reviews/): `schema-wave1.md` (1 blocker/7 major), `schema-0007.md` (implementasi), `wave1-catalog-availability.md` (1 blocker/2 major/9 minor), `wave1-payments-tenant.md` (0 blocker/1 major/8 minor). Keputusan lintas slice yang mengikat ada di [reviews/wave1-decisions.md](reviews/wave1-decisions.md) D1–D17.
+
+Belum selesai: refunds/cases (sedang dikerjakan), settlement/payout, review/risk/reporting, profil `/me`, dan dispatcher OTP eksternal. Semua provider eksternal tetap sandbox/stub; tidak ada uang nyata, deployment, atau migrasi produksi yang diklaim.
+
+## Status implementasi 13 November 2026 (lanjutan sesi orkestrasi DSH)
+
+Setelah review independen dan perbaikan, seluruh slice wave 1, wave 2a, pickup, refunds dan cases sudah terintegrasi. Bukti terakhir: `npm run test:integration` menerapkan migrasi `0000..0008` pada PostgreSQL baru dan menjalankan **281/281 tes** dengan Redis/BullMQ nyata, tanpa skip; typecheck, lint, format dan build lulus.
+
+| Slice                                                      | Commit    | Bukti                          |
+| ---------------------------------------------------------- | --------- | ------------------------------ |
+| Refunds (keputusan kampus, kredit tepat sekali)            | `d49a806` | 14 tes PostgreSQL              |
+| Perbaikan review pickup (rate limit, test HTTP/konkurensi) | `dee2893` | 16 PG + 7 HTTP + 7 interceptor |
+| Cases (keputusan kampus, refund pending)                   | `5e0bf87` | 17 tes PostgreSQL              |
+
+Laporan review independen di [reviews/](reviews/): `schema-wave1.md`, `schema-0007.md`, `wave1-catalog-availability.md`, `wave1-payments-tenant.md`, `wave1-pickup.md`, dan `wave1-refunds-cases.md`. Keputusan lintas slice mengikat ada di [reviews/wave1-decisions.md](reviews/wave1-decisions.md) D1–D17.
+
+Catatan proses: sesi ini memakai harness DSH dengan model subagent `inferhub/deepseek-v4.1-flash` (bukan GPT-6 Luna seperti tertulis pada checkpoint sebelumnya); aturan ORCHESTRATION lain tetap dipatuhi.
+
+Belum selesai: settlement/payout/rekening (desain sedang disusun), review/risk/reporting, profil `/me`, dispatcher OTP eksternal, dan job operasional (pembersih idempotency/outbox). Tidak ada provider nyata, deployment, atau migrasi produksi yang diklaim.
+
+## Status implementasi 13 November 2026 (lanjutan 2)
+
+Settlement/payout/rekening bank selesai diimplementasikan dan diintegrasikan, setelah desainnya diputuskan root (D18). Review refunds/cases juga ditutup.
+
+| Slice                                                  | Commit    | Bukti                                          |
+| ------------------------------------------------------ | --------- | ---------------------------------------------- |
+| Schema 0009 (settlements/payouts/bank accounts)        | `9d1e17b` | 51 tabel, 101 FK; baseline 281/281 tetap lulus |
+| Keputusan desain D18                                   | `3bb8e9a` | Q1–Q10 dijawab, env `PAYOUTS_PROVIDER_MODE`    |
+| Refunds/cases review follow-up + settlements + payouts | `101feca` | 353/353 tes integrasi                          |
+
+Keadaan per slice sekarang:
+
+- **Settlements**: release memindahkan dana dari escrow order ke akun payable tenant tepat sekali, hanya untuk order `completed` tanpa kasus terbuka dan tanpa refund. Dipicu di transaksi handover pickup dan pada keputusan kasus terminal, tanpa pernah menggagalkan alur tersebut (savepoint + audit `release_deferred`/`release_failed`).
+- **Payouts**: pemilik terverifikasi meminta payout; dana di-hold atomik dari akun payable, satu payout aktif per tenant, snapshot tujuan sehingga perubahan rekening tidak mengubah payout lama. Processor sandbox berjalan di luar lock, dedupe provider event, dan memindahkan hold ke akun clearing dengan alokasi FIFO ke settlements — atau melepasnya kembali — tepat sekali (`payouts_ledger_legs_check`).
+- **Rekening bank**: ciphertext AES-256-GCM + HMAC untuk dedupe + masking; penggantian rekening membuat baris baru dan menonaktifkan yang lama; verifikasi masih 503 sampai mekanismenya diputuskan (Q4).
+- **Refunds/cases**: 13 route kini punya test HTTP kontrak, timestamp mikrodetik, sisi debit escrow diassert lewat transaksi ledger refund, dan celah TOCTOU pembukaan kasus ditutup.
+
+Yang masih terbuka (dicatat, bukan diklaim selesai): review/risk/reporting, profil `/me`, dispatcher OTP eksternal, job operasional (pembersih idempotency/outbox, penyapu release, retensi/rekonsiliasi), trigger DB penolak saldo negatif untuk akun system (Q6), dan jalur penyelesaian payout/refund berstatus `needs_assistance`. Tidak ada provider nyata, deployment, atau migrasi produksi yang diklaim.
+
+## Status implementasi 13 November 2026 (lanjutan 3)
+
+Review independen settlement/payout sudah ditutup seluruhnya (0 blocker, 2 major, 7 minor). Bukti akhir: **382/382 tes integrasi** pada migrasi `0000..0009`, typecheck/lint/format/build lulus, API (`/v1/health/ready`, `/docs`) dan worker boot bersih dengan modul payouts/settlements ter-resolve.
+
+| Commit    | Isi                                                                                                                                                                                                                       |
+| --------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `9d1e17b` | Migrasi 0009: settlements, payouts, bank accounts, allocations, attempts, provider events, outbox, payout events                                                                                                          |
+| `3bb8e9a` | Keputusan desain D18 (Q1–Q10) + env `PAYOUTS_PROVIDER_MODE`                                                                                                                                                               |
+| `101feca` | Implementasi settlements/payouts/rekening + follow-up review refunds/cases                                                                                                                                                |
+| `dcc2be7` | Laporan review independen settlements/payouts                                                                                                                                                                             |
+| `6bbf20d` | Penutupan temuan review: test constraint 0009, pemicu release handover benar-benar diuji, provider disabled = gagal permanen (hold dilepas), cek kepemilikan rekening, otorisasi sebelum kripto, pemantauan payout kampus |
+
+Yang masih terbuka dan **tidak** diklaim selesai:
+
+- `GET /v1/campuses/:campusId/settlements` (pemantauan settlement kampus) — ditunda, dicatat di docs.
+- FK komposit `(tenant_id, bank_account_id)` untuk `payouts` — perlu migrasi baru (milik root).
+- Trigger DB penolak saldo negatif akun system (Q6) — pengganti sementara: lock + BigInt + test konkurensi.
+- Jalur penyelesaian `needs_assistance` untuk payout/refund dengan hasil provider ambigu.
+- Slice review/risk/reporting, profil `/me`, dispatcher OTP eksternal, dan job operasional (pembersih idempotency/outbox, penyapu release, retensi/rekonsiliasi).
+
+Tidak ada provider nyata, deployment, atau migrasi produksi yang diklaim.
+
 ## Paket kerja dan Jira
 
 | Paket                                  | Tiket backend                                                                                                                                  | Status implementasi                                                                    |

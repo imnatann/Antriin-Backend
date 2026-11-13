@@ -141,6 +141,47 @@ export class WalletService {
     });
   }
 
+  /**
+   * Creates the system account when missing and locks its row FOR UPDATE,
+   * returning the ledger projection balance (docs/design/settlement-payout.md
+   * section 4.3, D18 Q10).
+   *
+   * A transaction client is REQUIRED: the lock only serializes the balance
+   * check against a concurrent hold/release when it lives until that
+   * transaction commits. Callers must take this lock before calling
+   * postTransfer, which locks both accounts in ascending id order; a flow that
+   * pre-locks one of them keeps the global order "tenant payable first".
+   */
+  async lockSystemAccount(
+    systemKey: string,
+    currency: string,
+    client: PoolClient,
+  ): Promise<{ accountId: string; balanceMinor: string }> {
+    if (!systemKey.trim() || systemKey.length > 120)
+      throw new BadRequestException('Invalid system account key');
+    assertCurrency(currency);
+    if (!client)
+      throw new BadRequestException(
+        'lockSystemAccount requires a transaction client',
+      );
+    await client.query(
+      `insert into wallet_accounts (account_type, system_key, currency)
+       values ('system', $1, $2)
+       on conflict do nothing`,
+      [systemKey, currency],
+    );
+    const result = await client.query<{ id: string; balance_minor: string }>(
+      `select id, balance_minor::text
+         from wallet_accounts
+        where account_type = 'system' and system_key = $1 and currency = $2
+        for update`,
+      [systemKey, currency],
+    );
+    const account = result.rows[0];
+    if (!account) throw new NotFoundException('System account was not found');
+    return { accountId: account.id, balanceMinor: account.balance_minor };
+  }
+
   /** Return wallet balances without creating or changing wallet accounts. */
   async getBalance(
     userId: string,

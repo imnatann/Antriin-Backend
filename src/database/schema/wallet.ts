@@ -8,6 +8,7 @@ import {
   numeric,
   pgTable,
   timestamp,
+  unique,
   uniqueIndex,
   uuid,
   varchar,
@@ -36,6 +37,11 @@ export const walletAccounts = pgTable(
       .notNull(),
   },
   (table) => [
+    // Composite FK target (migration 0007, decision D12.3): a real UNIQUE
+    // constraint so `topup_intents_user_wallet_fk` can reference
+    // (owner_user_id, id) and prove the wallet belongs to the top-up user.
+    // System accounts (owner_user_id NULL) stay safe: NULLs are distinct.
+    unique('wallet_accounts_owner_id_uq').on(table.ownerUserId, table.id),
     uniqueIndex('wallet_accounts_owner_currency_uq')
       .on(table.ownerUserId, table.currency)
       .where(sql`${table.ownerUserId} is not null`),

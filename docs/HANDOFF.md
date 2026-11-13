@@ -11,7 +11,31 @@ Checkpoint 12 November 2026 dibuat atas permintaan pengguna sebelum batas penggu
 - Branch penyimpanan draft wave2: [codex/backend-wip-20261112](https://github.com/BagasDwikiPurnomo/Antriin-Backend/tree/codex/backend-wip-20261112). WIP bukan fitur siap pakai dan tidak boleh di-deploy/dianggap sudah dimigrasikan.
 - Pengguna mengizinkan commit/push berkala dan pembaruan Jira backend. Tidak ada merge/push force/reset database/deployment uang nyata.
 
-## WIP yang harus dibaca ulang
+## Status setelah wave 1 dan wave 2a (12 November 2026, sesi orkestrasi DSH)
+
+Draft WIP pada tabel di bawah sudah **diimplementasikan, direview independen, dan diintegrasikan**. Ringkasan keadaan sebenarnya:
+
+| Area             | Keadaan                                                                                                                                                                                                                    | Bukti                                                                                       |
+| ---------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
+| Schema & migrasi | Migrasi `0000..0008` (43 tabel, 80 FK, 111 CHECK pada 0007). 0006 memuat katalog/order/payment, 0007 menutup 1 blocker + 7 major + 14 minor temuan review schema, 0008 menambah `cases`/`refunds` + dedupe provider refund | `npm run db:migrate` dari nol sukses; `db:generate` melaporkan tidak ada perubahan tertunda |
+| Katalog          | CRUD tenant-scoped + optimistic concurrency, discovery pembeli, quote advisory kanonik, audit wajib untuk harga/status/arsip, duplikat baris keranjang diizinkan dengan tie-breaker hash                                   | 16 test PostgreSQL + 4 test HTTP                                                            |
+| Availability     | Slot berversi konfigurasi, FOR UPDATE sebagai otoritas kapasitas, reserve/release/consume/move idempoten, validasi jam operasional lewat satu kontrak baca, audit aksi manajemen                                           | 16 test PostgreSQL (termasuk N paralel → tepat K)                                           |
+| Tenant/kampus    | Discovery, transisi status staf/admin kampus, jam operasional + override, bootstrap owner pertama, provisioning campus admin service-only, arsip dijaga komitmen pembeli aktif                                             | 32 test PostgreSQL + kontrak HTTP                                                           |
+| Payments         | Top-up intent + outbox atomik, webhook HMAC atas raw body dengan jendela 300 detik, dedupe provider event, kredit wallet tepat sekali, queue worker terpasang di `jobs`/`worker`                                           | 33 test PostgreSQL + HTTP                                                                   |
+| Orders           | Checkout atomik (idempotent, retry 40P01 sekali → 409), state machine tenant, proposal jadwal tanpa auto-accept, kontrak handover, `cancelForRefundDecision`, lock tenant anti write-skew                                  | 42 test PostgreSQL + HTTP                                                                   |
+| Pickup           | Kredensial hash (HMAC lookup + AES-GCM re-display), verifikasi bebas efek samping, handover sekali lewat kontrak orders, rate limit per (IP, tenant, actor) hanya untuk percobaan gagal                                    | 16 PostgreSQL + 7 HTTP + 7 interceptor                                                      |
+| Refunds          | Keputusan kampus → refund pending + outbox, adapter sandbox processor-driven, dedupe provider event, kredit wallet tepat sekali dari akun escrow                                                                           | 14 test PostgreSQL                                                                          |
+| Cases            | Kasus operasional per peran, keputusan campus admin dengan alasan + audit, `approved_cancel` membatalkan order dan mengantre refund dalam satu transaksi, kasus pasca-pickup tanpa refund otomatis                         | 17 test PostgreSQL                                                                          |
+
+Keputusan lintas slice yang mengikat dicatat di [reviews/wave1-decisions.md](reviews/wave1-decisions.md) (D1–D17): semantik `pickup_slots.version`, presisi timestamp mikrodetik untuk optimistic concurrency, kontrak baca jam operasional, peta kepemilikan tabel, urutan checkout resmi, penguncian slot, akun ledger `orders.payment.escrow`, dan ratifikasi temuan review.
+
+### Perbedaan terhadap catatan sebelumnya
+
+- Subagent pada sesi ini **bukan** GPT-6 Luna: harness hanya menyediakan `inferhub/deepseek-v4.1-flash` untuk teammate. Aturan repo lain di [ORCHESTRATION.md](ORCHESTRATION.md) (brief mandiri, satu pemilik per file, tanpa nested delegation, integrasi/review/acceptance di root) tetap dipatuhi.
+- `release`/`consume` reservasi kini bernama `releaseReservation(client,tenantId,orderId)` dan `consumeReservation(client,tenantId,orderId)` (tenant-scoped). `reserveForCheckout`/`moveReservation` tidak berubah.
+- Baris `orders` **harus** ada sebelum `reserveForCheckout` (FK `slot_reservations_order_id`), sehingga urutan checkout adalah: idempotency → quote → INSERT orders → INSERT items → reserve → debit → payment → event/audit/outbox.
+
+## Catatan WIP awal (historis, sudah tidak berlaku)
 
 | Slice / implementer Luna                     | File dan keadaan aktual                                                                                                                          | Pekerjaan berikut                                                                                                                                                                  |
 | -------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -19,7 +43,7 @@ Checkpoint 12 November 2026 dibuat atas permintaan pengguna sebelum batas penggu
 | Order/pickup, `backend_scope`                | Hanya draft `schema/orders.ts`; belum service/controller/tests/docs/migrasi                                                                      | Review FK slot/tenant/campus dan snapshot; implement checkout/state/proposal/pickup secara bertahap                                                                                |
 | Payments, `quality_baseline`                 | Hanya draft `schema/payments.ts` untuk topup intents, request outbox dan provider events                                                         | Implement adapter stub, request processor, HTTP intent/webhook, konfigurasi/raw body, tests/migration/docs                                                                         |
 
-Ketiga schema WIP belum diekspor dari `src/database/schema/index.ts`, belum menghasilkan migrasi dan belum diuji terhadap PostgreSQL. Root memperbaiki satu TS7006 callback validasi quote saat menyimpan; hasil typecheck WIP dicatat terpisah, bukan penerimaan integrasi. Modul campus/tenant/availability sudah mempunyai wiring WIP yang membutuhkan schema tersebut; jangan menggunakan branch WIP sebagai aplikasi operasional.
+Ketiga schema WIP belum diekspor dari `src/database/schema/index.ts`, belum menghasilkan migrasi dan belum diuji terhadap PostgreSQL. Root memperbaiki satu TS7006 callback validasi quote dan dua unused import saat menyimpan. Typecheck WIP lulus; hasil ini bukan penerimaan integrasi dan draft belum diuji pada PostgreSQL. Modul campus/tenant/availability sudah mempunyai wiring WIP yang membutuhkan schema tersebut; jangan menggunakan branch WIP sebagai aplikasi operasional.
 
 ## Kontrak antar implementer
 

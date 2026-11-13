@@ -43,6 +43,34 @@
       "when": 1794446529272,
       "tag": "0005_audit_retention",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1794465209055,
+      "tag": "0006_fancy_white_queen",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1794469428462,
+      "tag": "0007_yielding_rafael_vega",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1794474195817,
+      "tag": "0008_pretty_hex",
+      "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1794538510098,
+      "tag": "0009_flawless_whirlwind",
+      "breakpoints": true
     }
   ]
 }

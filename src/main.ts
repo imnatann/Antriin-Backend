@@ -15,7 +15,8 @@ async function bootstrap() {
   const app = await NestFactory.create<NestFastifyApplication>(
     AppModule,
     new FastifyAdapter({ bodyLimit: 1048576 }),
-    { bufferLogs: true },
+    // rawBody keeps the exact webhook bytes for HMAC signature verification.
+    { bufferLogs: true, rawBody: true },
   );
   app.useLogger(app.get(Logger));
   const config = app.get(ConfigService);
