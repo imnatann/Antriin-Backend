@@ -66,6 +66,31 @@ IMAGE=ghcr.io/<owner>/antriin-backend TAG=<sha> bash remote-deploy.sh
 
 API di-bind ke `0.0.0.0:3000` lewat `API_BIND_ADDRESS`.
 
+## Status terverifikasi (13 Nov 2026)
+
+Deploy pertama berjalan end-to-end dan diverifikasi dari internet publik:
+
+| Pemeriksaan                   | Hasil                                                                                          |
+| ----------------------------- | ---------------------------------------------------------------------------------------------- |
+| CI pada commit yang di-deploy | sukses, termasuk 384 tes                                                                       |
+| Deploy workflow               | [run 43377553948](https://github.com/imnatann/Antriin-Backend/actions/runs/43377553948) sukses |
+| Image berjalan                | `ghcr.io/imnatann/antriin-backend:2520c1ec66f7`                                                |
+| `antriin-api-1`               | Up, healthy                                                                                    |
+| `antriin-worker-1`            | Up, worker started                                                                             |
+| `GET /v1/health/live`         | 200, status ok                                                                                 |
+| `GET /v1/health/ready`        | 200, database & redis true                                                                     |
+| `GET /docs`                   | 200, Swagger                                                                                   |
+| Migrasi `0000..0009`          | diterapkan service `migrate` sebelum restart                                                   |
+
+### Jebakan yang sudah ditutup
+
+Dua kegagalan deploy pertama berasal dari workflow, bukan dari aplikasi:
+
+1. `jobs.<id>.environment.url` tidak boleh memakai konteks `secrets`. Itu membuat seluruh file workflow invalid sehingga run muncul tanpa job. `url` dihapus; endpoint diverifikasi oleh langkah `curl` terakhir.
+2. Script remote semula dikirim lewat `ssh ... bash -s < script`. `docker compose run` mewarisi stdin dan menelan sisa script: migrasi selesai, script mencapai EOF, keluar 0, dan `api`/`worker` tidak pernah dinyalakan. Sekarang script dijalankan dari file di host dan perintah migrasi diberi `</dev/null`.
+
+## Batas yang belum diklaim
+
 ## Batas yang belum diklaim
 
 - **Tanpa TLS dan tanpa reverse proxy.** Port 3000 terbuka langsung. Pasang nginx + sertifikat sebelum dipakai pengguna nyata.

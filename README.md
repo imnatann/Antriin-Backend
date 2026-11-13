@@ -45,6 +45,8 @@ docker compose --profile app up --build -d
 
 API dan worker menggunakan image yang sama dengan entry point terpisah. Compose mengganti alamat DB/Redis ke nama service container. Konfigurasi Compose ditujukan untuk development lokal.
 
+Untuk deployment otomatis ke host pilot (GitHub Actions ke GHCR lalu `docker compose`), lihat [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md). Workflow deploy hanya berjalan setelah CI sukses di `main`.
+
 ## Database
 
 Skema mencakup fondasi kampus/user/tenant, OTP/sesi/verifikasi kampus, membership/permission, ledger/wallet, outbox/notifikasi dan audit. Migrasi menyertakan FK/check/unique serta trigger khusus untuk immutable ledger, proyeksi saldo, dan audit. Ini belum keseluruhan schema produk. Update `updated_at` secara eksplisit di mutation aplikasi kecuali tabel yang secara khusus memiliki trigger.
