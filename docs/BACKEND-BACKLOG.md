@@ -71,6 +71,28 @@ Keadaan per slice sekarang:
 
 Yang masih terbuka (dicatat, bukan diklaim selesai): review/risk/reporting, profil `/me`, dispatcher OTP eksternal, job operasional (pembersih idempotency/outbox, penyapu release, retensi/rekonsiliasi), trigger DB penolak saldo negatif untuk akun system (Q6), dan jalur penyelesaian payout/refund berstatus `needs_assistance`. Tidak ada provider nyata, deployment, atau migrasi produksi yang diklaim.
 
+## Status implementasi 13 November 2026 (lanjutan 3)
+
+Review independen settlement/payout sudah ditutup seluruhnya (0 blocker, 2 major, 7 minor). Bukti akhir: **382/382 tes integrasi** pada migrasi `0000..0009`, typecheck/lint/format/build lulus, API (`/v1/health/ready`, `/docs`) dan worker boot bersih dengan modul payouts/settlements ter-resolve.
+
+| Commit    | Isi                                                                                                                                                                                                                       |
+| --------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `9d1e17b` | Migrasi 0009: settlements, payouts, bank accounts, allocations, attempts, provider events, outbox, payout events                                                                                                          |
+| `3bb8e9a` | Keputusan desain D18 (Q1–Q10) + env `PAYOUTS_PROVIDER_MODE`                                                                                                                                                               |
+| `101feca` | Implementasi settlements/payouts/rekening + follow-up review refunds/cases                                                                                                                                                |
+| `dcc2be7` | Laporan review independen settlements/payouts                                                                                                                                                                             |
+| `6bbf20d` | Penutupan temuan review: test constraint 0009, pemicu release handover benar-benar diuji, provider disabled = gagal permanen (hold dilepas), cek kepemilikan rekening, otorisasi sebelum kripto, pemantauan payout kampus |
+
+Yang masih terbuka dan **tidak** diklaim selesai:
+
+- `GET /v1/campuses/:campusId/settlements` (pemantauan settlement kampus) — ditunda, dicatat di docs.
+- FK komposit `(tenant_id, bank_account_id)` untuk `payouts` — perlu migrasi baru (milik root).
+- Trigger DB penolak saldo negatif akun system (Q6) — pengganti sementara: lock + BigInt + test konkurensi.
+- Jalur penyelesaian `needs_assistance` untuk payout/refund dengan hasil provider ambigu.
+- Slice review/risk/reporting, profil `/me`, dispatcher OTP eksternal, dan job operasional (pembersih idempotency/outbox, penyapu release, retensi/rekonsiliasi).
+
+Tidak ada provider nyata, deployment, atau migrasi produksi yang diklaim.
+
 ## Paket kerja dan Jira
 
 | Paket                                  | Tiket backend                                                                                                                                  | Status implementasi                                                                    |
