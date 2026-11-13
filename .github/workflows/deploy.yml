@@ -79,9 +79,11 @@ jobs:
     name: Deploy to pilot host
     needs: build
     runs-on: ubuntu-latest
+    # No `url:` here on purpose: the environment URL cannot reference the
+    # `secrets` context, and DEPLOY_HOST is a secret. A literal URL would put the
+    # host in the repository, so the endpoint is verified by the last step instead.
     environment:
       name: production
-      url: http://${{ secrets.DEPLOY_HOST }}:${{ env.APP_PORT }}/v1/health/ready
     steps:
       - uses: actions/checkout@v4
         with:
