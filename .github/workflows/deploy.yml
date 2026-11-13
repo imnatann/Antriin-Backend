@@ -134,9 +134,11 @@ jobs:
           APP_PORT: ${{ env.APP_PORT }}
         run: |
           set -euo pipefail
+          # Run the uploaded file, never `bash -s < script`: a child process that
+          # inherits stdin (docker compose run) would otherwise swallow the rest
+          # of the script and the deploy would silently stop half-way.
           ssh -i ~/.ssh/deploy_key -o BatchMode=yes "$DEPLOY_USER@$DEPLOY_HOST" \
-            "IMAGE='$IMAGE' TAG='$TAG' DEPLOY_DIR='$DEPLOY_DIR' APP_PORT='$APP_PORT' bash -s" \
-            < deploy/remote-deploy.sh
+            "cd '$DEPLOY_DIR' && IMAGE='$IMAGE' TAG='$TAG' DEPLOY_DIR='$DEPLOY_DIR' APP_PORT='$APP_PORT' bash ./remote-deploy.sh < /dev/null"
 
       - name: Log out of GHCR on the host
         if: always()

@@ -30,7 +30,8 @@ echo '--- ensuring datastores are up'
 ANTRIIN_IMAGE="$RUNTIME_IMAGE" docker compose up -d postgres redis
 
 echo '--- running migrations'
-ANTRIIN_IMAGE="$MIGRATOR_IMAGE" docker compose --profile tools run --rm migrate
+# </dev/null: the migrate container must never read the caller's stdin.
+ANTRIIN_IMAGE="$MIGRATOR_IMAGE" docker compose --profile tools run --rm migrate < /dev/null
 
 echo '--- starting application'
 ANTRIIN_IMAGE="$RUNTIME_IMAGE" docker compose up -d --remove-orphans api worker
