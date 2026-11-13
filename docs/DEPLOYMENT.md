@@ -17,10 +17,10 @@ Deploy tidak pernah berjalan paralel (`concurrency: deploy-production`, `cancel-
 
 ## GitHub Secrets
 
-| Secret           | Isi                                      |
-| ---------------- | ---------------------------------------- |
-| `DEPLOY_HOST`    | alamat host pilot                        |
-| `DEPLOY_USER`    | user SSH untuk deploy                    |
+| Secret           | Isi                                              |
+| ---------------- | ------------------------------------------------ |
+| `DEPLOY_HOST`    | alamat host pilot                                |
+| `DEPLOY_USER`    | user SSH untuk deploy                            |
 | `DEPLOY_SSH_KEY` | private key ed25519 khusus CI (tanpa passphrase) |
 
 `GITHUB_TOKEN` dipakai untuk push ke GHCR dan untuk `docker login` sementara di host; setelah deploy selesai host selalu `docker logout` (langkah `if: always()`).
@@ -58,11 +58,11 @@ IMAGE=ghcr.io/<owner>/antriin-backend TAG=<sha> bash remote-deploy.sh
 
 ## Endpoint
 
-| Path                 | Kegunaan                          |
-| -------------------- | --------------------------------- |
-| `/v1/health/live`    | proses hidup                      |
-| `/v1/health/ready`   | PostgreSQL + Redis terjangkau     |
-| `/docs`              | Swagger (aktif via `SWAGGER_ENABLED`) |
+| Path               | Kegunaan                              |
+| ------------------ | ------------------------------------- |
+| `/v1/health/live`  | proses hidup                          |
+| `/v1/health/ready` | PostgreSQL + Redis terjangkau         |
+| `/docs`            | Swagger (aktif via `SWAGGER_ENABLED`) |
 
 API di-bind ke `0.0.0.0:3000` lewat `API_BIND_ADDRESS`.
 
