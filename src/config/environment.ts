@@ -87,6 +87,12 @@ export const environmentSchema = Joi.object({
     .min(Joi.ref('PAYMENTS_TOPUP_MIN_MINOR'))
     .max(100000000)
     .default(2000000),
+  // Payout provider stays sandbox-only; production is disabled (D18 Q10).
+  PAYOUTS_PROVIDER_MODE: Joi.when('NODE_ENV', {
+    is: 'production',
+    then: Joi.string().valid('disabled').default('disabled'),
+    otherwise: Joi.string().valid('disabled', 'sandbox').default('disabled'),
+  }),
   // Sandbox top-up intent lifetime; expiry is informational (no sweeper yet).
   PAYMENTS_SANDBOX_TOPUP_TTL_SECONDS: Joi.number()
     .integer()

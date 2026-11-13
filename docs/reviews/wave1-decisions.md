@@ -179,3 +179,31 @@ Reviewer independen membuktikan dua kegagalan nyata pada rancangan checkout:
 4. **Refunds/cases (wave 2b) — tabel resmi:** migrasi 0008 (commit 7203b30) memuat `cases`, `refunds`, `refund_provider_events`, `refund_request_outbox`, dan `order_payments UNIQUE(order_id, id)`. Refund pilot = PENUH satu kali per order (partial unique `refunds_one_per_order_uq`), kredit hanya setelah provider success, debit dari akun system `orders.payment.escrow` ke wallet buyer, idempotency ledger `refunds.sandbox.credit:<refundId>`.
 5. **Pembatalan order oleh keputusan kampus:** tidak ada pengecualian D4. Slice orders menyediakan `OrdersService.cancelForRefundDecision(client, orderId, actorUserId, reason)` -> `{ orderId, buyerId, tenantId, status, totalMinor, currency, orderPaymentId }` (FOR UPDATE order, tolak completed/cancelled/declined, set cancelled + cancelled_at, order_events `order.cancelled`, releaseReservation idempoten, audit + outbox). Slice refunds memanggilnya dalam transaksi yang sama lalu menulis refund pending.
 6. **Env baru:** `REFUNDS_PROVIDER_MODE` ('disabled'|'sandbox'; production hanya 'disabled'; default 'disabled'). Adapter refund bersifat processor-driven tanpa endpoint webhook refund pada wave ini.
+
+## D18 — Keputusan root atas desain settlement/payout (Q1–Q10) dan review refunds/cases
+
+Desain: [design/settlement-payout.md](../design/settlement-payout.md). Migrasi 0009 sudah di-commit (`9d1e17b`, 51 tabel, 101 FK).
+
+**Q1 — Akun payable per tenant: DISETUJUI.** System key berbentuk `tenant.payable.<tenantId>` dan `tenant.payout.hold.<tenantId>` (ID opaque, bukan nama). Saldo tersedia = proyeksi ledger per akun, tidak pernah kolom. Akun system tambahan: `payout.clearing` (global, untuk leg keluar ke provider).
+
+**Q2 — Pemicu release: DISETUJUI (a)+(b), (c) DITUNDA.** Release dipanggil di transaksi handover pickup (setelah `markHandedOver`) dan dipanggil ulang idempoten saat kasus mencapai status terminal. Job penyapu untuk order `completed` yang tertahan tidak dibuat pada wave ini; dicatat sebagai pekerjaan operasional karena menyentuh slice yang sudah diterima.
+
+**Q3 — Refund/chargeback setelah dana dirilis: DITOLAK (409) pada pilot.** `cancelForRefundDecision` sudah menolak order `completed`; refund pasca-release butuh aturan saldo negatif/penagihan tenant yang belum ada dasarnya. Dicatat sebagai keputusan produk terbuka.
+
+**Q4 — Verifikasi rekening: DITUNDA.** Endpoint verifikasi TIDAK diaktifkan dan mengembalikan `503 BANK_ACCOUNT_VERIFICATION_DISABLED`. Payout hanya boleh ke rekening `verified`; rekening dapat dibuat berstatus `pending` dan diverifikasi lewat jalur terkontrol (service-only) sampai mekanisme diputuskan. Ini menjaga agar tidak ada jalur payout ke rekening yang belum terbukti.
+
+**Q5 — Batas nominal: `amount > 0` dan `<= dana tersedia`; payout parsial DIIZINKAN** (PILOT-POLICY: "maksimum dana tersedia"). Tidak ada minimum/maksimum operasional dan tidak ada kewajiban menarik seluruh saldo; batas tambahan menunggu keputusan produk.
+
+**Q6 — Penjaga DB saldo payable/hold: DITUNDA, service + test konkurensi WAJIB.** `wallet_accounts_balance_nonnegative_check` hanya berlaku untuk `account_type='wallet'`, jadi akun system bisa negatif. Wave ini mewajibkan `SELECT ... FOR UPDATE` + perbandingan BigInt + test "N payout paralel, dana cukup K -> tepat K sukses". Trigger DB penolak negatif untuk `system_key LIKE 'tenant.payable.%'` / `'tenant.payout.hold.%'` DICATAT sebagai pekerjaan migrasi berikutnya (menyentuh tabel foundation, perlu review terpisah).
+
+**Q7 — Retensi & rekonsiliasi: DITUNDA.** Retensi idempotency/outbox/payout_events, bukti transfer, dan penjadwalan rekonsiliasi adalah pekerjaan operasional; identitas rekonsiliasi §4.4 wajib lulus test sekarang, penjadwalannya belum.
+
+**Q8 — Fee provider payout: TIDAK DIMODELKAN.** Tidak ada kolom fee/net; PILOT-POLICY menyatakan pilot tidak memungut fee. Biaya provider nyata = keputusan kontrak terpisah.
+
+**Q9 — Pembatalan payout saat `processing`: DITOLAK (409).** Provider sudah dipanggil; rekonsiliasi ambigu ditangani lewat `payout_attempts.status='unknown'` dan `needs_assistance` pada refund, bukan pembatalan.
+
+**Q10 — Perubahan foundation: DISETUJUI terbatas.** (a) `WalletService.lockSystemAccount(systemKey, currency, client)` boleh ditambahkan root (method baru, tanpa mengubah perilaku lama). (b) Env baru `PAYOUTS_PROVIDER_MODE` = `disabled|sandbox` (production hanya `disabled`, default `disabled`), pola `PAYMENTS_PROVIDER_MODE`/`REFUNDS_PROVIDER_MODE`; root menambahkannya ke `src/config/environment.ts` + `.env.example`. Agent tidak mengedit file itu.
+
+**Kepemilikan slice (melengkapi D4):** `settlements` + `payouts` + `bank_accounts` + tabel pendukungnya = satu pemilik (`settlements-payouts`), karena release dan payout berbagi akun ledger dan invariant saldo. Slice `cases`/`orders` hanya menyediakan method BACA tambahan (`hasOpenCasesForOrder`, `getOrderSettlementContext`) — tidak diubah perilakunya.
+
+**Review refunds/cases (F1–F13, docs/reviews/wave1-refunds-cases.md):** F1 (MAJOR, tidak ada test HTTP untuk 11 route) WAJIB diperbaiki. F2–F13 diperbaiki sepanjang tidak mengubah perilaku bisnis: assert sisi debit escrow dikembalikan lewat transaksi ledger refund, klaim docs yang salah dihapus/diperbaiki, test paralel `applyRefundSuccess`, test CHECK refunds, Swagger 503/400, timestamp mikrodetik (D7) pada respons mutasi, dokumentasi approved_cancel saat provider disabled, klasifikasi mode disabled sebagai kegagalan PERMANEN, `REFUND_LEASE_LOST` tidak didokumentasikan sebagai kode HTTP, TOCTOU buka kasus ditutup dengan satu transaksi, dan test wiring queue (jobId nonce + re-enqueue). F13 (jalur penyelesaian `needs_assistance`) dicatat sebagai pekerjaan produk terbuka.
