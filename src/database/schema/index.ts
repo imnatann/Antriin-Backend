@@ -84,3 +84,5 @@ export * from './orders';
 export * from './payments';
 export * from './cases';
 export * from './refunds';
+export * from './settlements';
+export * from './payouts';

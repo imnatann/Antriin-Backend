@@ -64,6 +64,13 @@
       "when": 1794474195817,
       "tag": "0008_pretty_hex",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1794538510098,
+      "tag": "0009_flawless_whirlwind",
+      "breakpoints": true
     }
   ]
 }
