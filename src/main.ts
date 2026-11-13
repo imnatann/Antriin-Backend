@@ -11,6 +11,7 @@ import helmet from '@fastify/helmet';
 import { Logger } from 'nestjs-pino';
 import { AppModule } from './app.module';
 import { ApiExceptionFilter } from './common/api-exception.filter';
+import { helmetOptions } from './common/security-headers';
 import { ApiGuideService } from './modules/api-guide/api-guide.service';
 async function bootstrap() {
   const app = await NestFactory.create<NestFastifyApplication>(
@@ -21,7 +22,7 @@ async function bootstrap() {
   );
   app.useLogger(app.get(Logger));
   const config = app.get(ConfigService);
-  await app.register(helmet);
+  await app.register(helmet, helmetOptions);
   app.enableCors({
     origin: config
       .getOrThrow<string>('CORS_ORIGINS')
