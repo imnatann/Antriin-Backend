@@ -52,6 +52,25 @@ Catatan proses: sesi ini memakai harness DSH dengan model subagent `inferhub/dee
 
 Belum selesai: settlement/payout/rekening (desain sedang disusun), review/risk/reporting, profil `/me`, dispatcher OTP eksternal, dan job operasional (pembersih idempotency/outbox). Tidak ada provider nyata, deployment, atau migrasi produksi yang diklaim.
 
+## Status implementasi 13 November 2026 (lanjutan 2)
+
+Settlement/payout/rekening bank selesai diimplementasikan dan diintegrasikan, setelah desainnya diputuskan root (D18). Review refunds/cases juga ditutup.
+
+| Slice                                                  | Commit    | Bukti                                          |
+| ------------------------------------------------------ | --------- | ---------------------------------------------- |
+| Schema 0009 (settlements/payouts/bank accounts)        | `9d1e17b` | 51 tabel, 101 FK; baseline 281/281 tetap lulus |
+| Keputusan desain D18                                   | `3bb8e9a` | Q1–Q10 dijawab, env `PAYOUTS_PROVIDER_MODE`    |
+| Refunds/cases review follow-up + settlements + payouts | `101feca` | 353/353 tes integrasi                          |
+
+Keadaan per slice sekarang:
+
+- **Settlements**: release memindahkan dana dari escrow order ke akun payable tenant tepat sekali, hanya untuk order `completed` tanpa kasus terbuka dan tanpa refund. Dipicu di transaksi handover pickup dan pada keputusan kasus terminal, tanpa pernah menggagalkan alur tersebut (savepoint + audit `release_deferred`/`release_failed`).
+- **Payouts**: pemilik terverifikasi meminta payout; dana di-hold atomik dari akun payable, satu payout aktif per tenant, snapshot tujuan sehingga perubahan rekening tidak mengubah payout lama. Processor sandbox berjalan di luar lock, dedupe provider event, dan memindahkan hold ke akun clearing dengan alokasi FIFO ke settlements — atau melepasnya kembali — tepat sekali (`payouts_ledger_legs_check`).
+- **Rekening bank**: ciphertext AES-256-GCM + HMAC untuk dedupe + masking; penggantian rekening membuat baris baru dan menonaktifkan yang lama; verifikasi masih 503 sampai mekanismenya diputuskan (Q4).
+- **Refunds/cases**: 13 route kini punya test HTTP kontrak, timestamp mikrodetik, sisi debit escrow diassert lewat transaksi ledger refund, dan celah TOCTOU pembukaan kasus ditutup.
+
+Yang masih terbuka (dicatat, bukan diklaim selesai): review/risk/reporting, profil `/me`, dispatcher OTP eksternal, job operasional (pembersih idempotency/outbox, penyapu release, retensi/rekonsiliasi), trigger DB penolak saldo negatif untuk akun system (Q6), dan jalur penyelesaian payout/refund berstatus `needs_assistance`. Tidak ada provider nyata, deployment, atau migrasi produksi yang diklaim.
+
 ## Paket kerja dan Jira
 
 | Paket                                  | Tiket backend                                                                                                                                  | Status implementasi                                                                    |
