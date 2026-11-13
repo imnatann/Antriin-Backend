@@ -1,10 +1,11 @@
-import { Module } from '@nestjs/common';
+import { Module, forwardRef } from '@nestjs/common';
 import { DatabaseModule } from '../../database/database.module';
 import { AccessModule } from '../access/access.module';
 import { AuditModule } from '../audit/audit.module';
 import { AuthModule } from '../auth/auth.module';
 import { OutboxModule } from '../notifications/outbox.module';
 import { RefundsModule } from '../refunds/refunds.module';
+import { SettlementsModule } from '../settlements/settlements.module';
 import { CasesController } from './cases.controller';
 import { CasesService } from './cases.service';
 
@@ -19,6 +20,9 @@ import { CasesService } from './cases.service';
     AuditModule,
     OutboxModule,
     RefundsModule,
+    // A terminal non-cancelling decision triggers the payable release
+    // (D18 Q2b); settlements asks cases for open cases, hence forwardRef.
+    forwardRef(() => SettlementsModule),
   ],
   controllers: [CasesController],
   providers: [CasesService],

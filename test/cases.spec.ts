@@ -1319,5 +1319,115 @@ describe(
         '50000',
       );
     });
+
+    // Review F7 / D7: mutation responses carry the DB's microsecond value.
+    it('returns DB microsecond timestamps instead of millisecond ISO strings', async () => {
+      const env = await createEnv(pool);
+      const order = await createOrder(pool, svc.wallet, env);
+      const pattern = /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{6}Z$/;
+      const view = await svc.cases.openBuyerCase(env.buyerId, order.orderId, {
+        category: 'other',
+        subject: 'timestamp shape',
+      });
+      assert.match(view.createdAt, pattern);
+      assert.match(view.updatedAt, pattern);
+      const inserted = await pool.query<{
+        created_at: string;
+        updated_at: string;
+      }>(
+        `select to_char(created_at at time zone 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as created_at,
+                to_char(updated_at at time zone 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as updated_at
+           from cases where id = $1`,
+        [view.id],
+      );
+      assert.equal(
+        view.createdAt,
+        inserted.rows[0].created_at,
+        'the exact DB value, never a re-serialized Date',
+      );
+      assert.equal(view.updatedAt, inserted.rows[0].updated_at);
+
+      const decided = await svc.cases.decideCase(
+        env.adminId,
+        env.campusId,
+        view.id,
+        { status: 'resolved', reason: 'resolved with the buyer' },
+      );
+      assert.match(decided.case.decidedAt ?? '', pattern);
+      assert.match(decided.case.updatedAt, pattern);
+      const decidedRow = await pool.query<{ decided_at: string }>(
+        `select to_char(decided_at at time zone 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as decided_at
+           from cases where id = $1`,
+        [view.id],
+      );
+      assert.equal(decided.case.decidedAt, decidedRow.rows[0].decided_at);
+    });
+
+    // Review F11: the order scope is read INSIDE the insert transaction, so a
+    // concurrent cancellation cannot interleave between the check and the
+    // insert and leave a case bound to a scope that changed underneath it.
+    it('opens no case while a concurrent cancellation holds the order row', async () => {
+      const env = await createEnv(pool);
+      const order = await createOrder(pool, svc.wallet, env);
+      const cancelling = await pool.connect();
+      try {
+        await cancelling.query('begin');
+        await cancelling.query(
+          "update orders set status = 'cancelled', cancelled_at = now(), version = version + 1, updated_at = now() where id = $1",
+          [order.orderId],
+        );
+        let settled = false;
+        // Never-rejecting promise: an early assertion failure must not leak an
+        // unhandled rejection.
+        const opening = svc.cases
+          .openBuyerCase(env.buyerId, order.orderId, {
+            category: 'other',
+            subject: 'Concurrent cancellation',
+          })
+          .then(
+            (value) => ({ ok: true as const, value }),
+            (error: unknown) => ({ ok: false as const, error }),
+          );
+        void opening.then(() => {
+          settled = true;
+        });
+        await new Promise((resolve) => setTimeout(resolve, 200));
+        assert.equal(
+          settled,
+          false,
+          'opening a case must serialize against the cancellation (FOR SHARE)',
+        );
+        assert.equal(
+          await countRows(
+            pool,
+            'select count(*)::int as n from cases where order_id = $1',
+            [order.orderId],
+          ),
+          0,
+          'no case row may be committed while the order is mid-cancellation',
+        );
+        await cancelling.query('commit');
+        const outcome = await opening;
+        assert.ok(outcome.ok, 'the case opens once the cancellation committed');
+        if (outcome.ok) {
+          assert.equal(outcome.value.orderId, order.orderId);
+          assert.equal(outcome.value.buyerId, env.buyerId);
+          assert.equal(outcome.value.campusId, env.campusId);
+          assert.equal(outcome.value.tenantId, env.tenantId);
+        }
+        assert.equal(
+          await countRows(
+            pool,
+            'select count(*)::int as n from cases where order_id = $1',
+            [order.orderId],
+          ),
+          1,
+          'exactly one case, never an orphan duplicate',
+        );
+      } finally {
+        await cancelling.query('rollback').catch(() => undefined);
+        cancelling.release();
+      }
+    });
   },
 );

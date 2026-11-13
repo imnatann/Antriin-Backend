@@ -3,6 +3,7 @@ import { BullModule } from '@nestjs/bullmq';
 import { ConfigService } from '@nestjs/config';
 import { PAYMENT_REQUESTS_QUEUE } from '../modules/payments/payment-request.processor';
 import { REFUND_REQUESTS_QUEUE } from '../modules/refunds/refund-request.processor';
+import { PAYOUT_REQUESTS_QUEUE } from '../modules/payouts/payout-request.processor';
 export const MAINTENANCE_QUEUE = 'maintenance';
 export const DOMAIN_EVENTS_QUEUE = 'domain-events';
 @Module({
@@ -27,6 +28,7 @@ export const DOMAIN_EVENTS_QUEUE = 'domain-events';
     BullModule.registerQueue({ name: DOMAIN_EVENTS_QUEUE }),
     BullModule.registerQueue({ name: PAYMENT_REQUESTS_QUEUE }),
     BullModule.registerQueue({ name: REFUND_REQUESTS_QUEUE }),
+    BullModule.registerQueue({ name: PAYOUT_REQUESTS_QUEUE }),
   ],
   exports: [BullModule],
 })

@@ -18,6 +18,7 @@ import {
   ApiOkResponse,
   ApiOperation,
   ApiQuery,
+  ApiServiceUnavailableResponse,
   ApiTags,
   ApiUnauthorizedResponse,
 } from '@nestjs/swagger';
@@ -129,6 +130,10 @@ export class RefundsController {
     description:
       'ORDER_CANCEL_CONFLICT (completed/cancelled/declined), REFUND_ALREADY_EXISTS (one live refund per order), or ORDER_PAYMENT_NOT_REFUNDABLE',
   })
+  @ApiServiceUnavailableResponse({
+    description:
+      'REFUNDS_PROVIDER_DISABLED: the refund provider mode is disabled, which is always the case in production',
+  })
   @ApiUnauthorizedResponse({ description: 'Bearer authentication is required' })
   async initiate(
     @CurrentUser() principal: AuthenticatedPrincipal,
@@ -184,6 +189,9 @@ export class RefundsController {
       },
       required: ['data', 'meta'],
     },
+  })
+  @ApiBadRequestResponse({
+    description: 'Invalid status, cursor or limit query parameter',
   })
   @ApiForbiddenResponse({
     description: 'Missing campus.transactions.read permission',

@@ -5,6 +5,11 @@ import { MaintenanceProcessor } from './jobs/maintenance.processor';
 import { OutboxModule } from './modules/notifications/outbox.module';
 import { PaymentsModule } from './modules/payments/payments.module';
 import { RefundsModule } from './modules/refunds/refunds.module';
+import { PayoutsModule } from './modules/payouts/payouts.module';
+import {
+  PayoutRequestDispatcher,
+  PayoutRequestProcessor,
+} from './modules/payouts/payout-request.processor';
 import {
   RefundRequestDispatcher,
   RefundRequestProcessor,
@@ -21,6 +26,7 @@ import {
     OutboxModule,
     PaymentsModule,
     RefundsModule,
+    PayoutsModule,
   ],
   providers: [
     MaintenanceProcessor,
@@ -30,6 +36,8 @@ import {
     PaymentRequestProcessor,
     RefundRequestDispatcher,
     RefundRequestProcessor,
+    PayoutRequestDispatcher,
+    PayoutRequestProcessor,
   ],
 })
 export class WorkerModule {}

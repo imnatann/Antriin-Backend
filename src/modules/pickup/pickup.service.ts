@@ -2,9 +2,12 @@ import {
   BadRequestException,
   ConflictException,
   GoneException,
+  Inject,
   Injectable,
   NotFoundException,
+  Optional,
   ServiceUnavailableException,
+  forwardRef,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import {
@@ -21,6 +24,7 @@ import { AuditService } from '../audit/audit.service';
 import { uuidPattern } from '../notifications/outbox.service';
 import type { OrderStatus } from '../orders/orders.constants';
 import { OrdersService } from '../orders/orders.service';
+import { SettlementsService } from '../settlements/settlements.service';
 import {
   MAX_PICKUP_REASON_LENGTH,
   PICKUP_CODE_ALPHABET,
@@ -137,6 +141,11 @@ export class PickupService {
     private readonly orders: OrdersService,
     private readonly audit: AuditService,
     private readonly config: ConfigService,
+    // Optional so hand-built constructions (tests, scripts) keep working; Nest
+    // always injects it. Only the additive release hook below uses it.
+    @Optional()
+    @Inject(forwardRef(() => SettlementsService))
+    private readonly settlements?: SettlementsService,
   ) {}
 
   /**
@@ -573,6 +582,24 @@ export class PickupService {
         order.orderId,
         actorUserId,
       );
+      // D18 Q2a: releasing the order payable is triggered by the handover, in
+      // THIS transaction (the order is already locked by markHandedOver, so no
+      // new lock ordering is introduced). A release problem must NEVER fail a
+      // legitimate handover: the settlements slice contains it with a
+      // savepoint and records a deferred/failed audit row, leaving the money in
+      // escrow for a retry release.
+      if (this.settlements) {
+        try {
+          await this.settlements.releaseAfterHandover(
+            client,
+            tenantId,
+            order.orderId,
+            actorUserId,
+          );
+        } catch {
+          // Contained twice on purpose: a business handover always wins.
+        }
+      }
       const consumed = await client.query<{ id: string }>(
         `UPDATE pickup_credentials
             SET consumed_at = now(), updated_at = now()

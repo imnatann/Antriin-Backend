@@ -188,6 +188,21 @@ export interface OrderRefundDecisionResult {
   orderPaymentId: string;
 }
 
+/**
+ * Read-only contract for the settlements slice: everything the release needs
+ * to derive the amount and prove the order may be released. Amounts and status
+ * come from database rows, never from the caller.
+ */
+export interface OrderSettlementContext {
+  orderId: string;
+  tenantId: string;
+  status: OrderStatus;
+  totalMinor: string;
+  currency: string;
+  /** Successful payment of the order, or null when it has none. */
+  orderPaymentId: string | null;
+}
+
 /** Stable contract for the pickup slice (see docs/modules/orders.md). */
 export interface OrderHandoverContext {
   orderId: string;
@@ -1213,6 +1228,55 @@ export class OrdersService {
       reason: 'Order handed over to buyer',
       metadata: { fromStatus: 'ready_for_pickup', toStatus: 'completed' },
     });
+  }
+
+  // ---------------------------------------------------------------------------
+  // Contract for the settlements slice (wave 3)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Locks the order row FOR UPDATE and returns the data a settlement release
+   * needs. Returns null when the order does not exist for this tenant (the
+   * settlements slice maps that to a no-op, never to another tenant's data).
+   *
+   * Single writer per table (D4): settlements never update orders; they read
+   * through this method inside THEIR transaction. It does not authorize the
+   * actor by itself.
+   */
+  async getOrderSettlementContext(
+    client: PoolClient,
+    tenantId: string,
+    orderId: string,
+  ): Promise<OrderSettlementContext | null> {
+    this.assertUuid(tenantId, 'tenant id');
+    this.assertUuid(orderId, 'order id');
+    const result = await client.query<{
+      id: string;
+      tenant_id: string;
+      status: OrderStatus;
+      total_minor: string;
+      currency: string;
+    }>(
+      `SELECT id, tenant_id, status, total_minor::text AS total_minor, currency
+         FROM orders WHERE id = $1 AND tenant_id = $2 FOR UPDATE`,
+      [orderId, tenantId],
+    );
+    const order = result.rows[0];
+    if (!order) return null;
+    const payment = await client.query<{ id: string }>(
+      `SELECT id FROM order_payments
+        WHERE order_id = $1 AND status = 'succeeded'
+        ORDER BY created_at, id LIMIT 1`,
+      [orderId],
+    );
+    return {
+      orderId: order.id,
+      tenantId: order.tenant_id,
+      status: order.status,
+      totalMinor: order.total_minor,
+      currency: order.currency,
+      orderPaymentId: payment.rows[0]?.id ?? null,
+    };
   }
 
   // ---------------------------------------------------------------------------

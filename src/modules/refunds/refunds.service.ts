@@ -121,25 +121,52 @@ export type RefundRow = {
   provider: string;
   provider_reference: string | null;
   reason: string;
-  requested_at: Date;
-  submitted_at: Date | null;
-  succeeded_at: Date | null;
-  failed_at: Date | null;
+  requested_at: string;
+  submitted_at: string | null;
+  succeeded_at: string | null;
+  failed_at: string | null;
   last_error: string | null;
   attempt_count: number;
   version: number;
-  created_at: Date;
-  updated_at: Date;
+  created_at: string;
+  updated_at: string;
 };
 
 type Cursor = { createdAt: string; id: string };
 
-export const REFUND_COLUMNS =
-  'id::text, campus_id::text, tenant_id::text, order_id::text, ' +
-  'order_payment_id::text, case_id::text, buyer_id::text, amount_minor::text, ' +
-  'currency, status, provider, provider_reference, reason, requested_at, ' +
-  'submitted_at, succeeded_at, failed_at, last_error, attempt_count, version, ' +
-  'created_at, updated_at';
+/**
+ * Response timestamps must be the DB microsecond UTC strings themselves (D7):
+ * re-serializing through Date/toISOString truncates to milliseconds and would
+ * break optimistic concurrency the moment a client echoes the value back.
+ */
+function microUtc(column: string): string {
+  return `to_char(${column} AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as ${column}`;
+}
+
+export const REFUND_COLUMNS = [
+  'id::text',
+  'campus_id::text',
+  'tenant_id::text',
+  'order_id::text',
+  'order_payment_id::text',
+  'case_id::text',
+  'buyer_id::text',
+  'amount_minor::text',
+  'currency',
+  'status',
+  'provider',
+  'provider_reference',
+  'reason',
+  microUtc('requested_at'),
+  microUtc('submitted_at'),
+  microUtc('succeeded_at'),
+  microUtc('failed_at'),
+  'last_error',
+  'attempt_count',
+  'version',
+  microUtc('created_at'),
+  microUtc('updated_at'),
+].join(', ');
 
 export function isUniqueViolation(
   error: unknown,
@@ -403,12 +430,10 @@ export class RefundsService {
     }
     values.push(limit + 1);
     const result = await this.database.pool.query<RefundRow>(
-      `select ${REFUND_COLUMNS},
-              to_char(created_at at time zone 'UTC',
-                      'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as cursor_created_at
-         from refunds
+      `select ${REFUND_COLUMNS}
+         from refunds r
         where ${where}
-        order by created_at desc, id desc
+        order by r.created_at desc, r.id desc
         limit $${values.length}`,
       values,
     );
@@ -421,7 +446,7 @@ export class RefundsService {
       nextCursor:
         hasMore && last
           ? encodeCursor({
-              createdAt: String(last.cursor_created_at),
+              createdAt: String(last.created_at),
               id: String(last.id),
             })
           : null,
@@ -456,15 +481,15 @@ export class RefundsService {
       provider: row.provider,
       providerReference: row.provider_reference,
       reason: row.reason,
-      requestedAt: row.requested_at.toISOString(),
-      submittedAt: row.submitted_at ? row.submitted_at.toISOString() : null,
-      succeededAt: row.succeeded_at ? row.succeeded_at.toISOString() : null,
-      failedAt: row.failed_at ? row.failed_at.toISOString() : null,
+      requestedAt: row.requested_at,
+      submittedAt: row.submitted_at,
+      succeededAt: row.succeeded_at,
+      failedAt: row.failed_at,
       lastError: row.last_error,
       attemptCount: Number(row.attempt_count),
       version: Number(row.version),
-      createdAt: row.created_at.toISOString(),
-      updatedAt: row.updated_at.toISOString(),
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
     };
   }
 

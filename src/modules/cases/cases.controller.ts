@@ -2,6 +2,7 @@ import {
   Body,
   Controller,
   Get,
+  HttpCode,
   Param,
   ParseUUIDPipe,
   Post,
@@ -18,6 +19,7 @@ import {
   ApiOkResponse,
   ApiOperation,
   ApiQuery,
+  ApiServiceUnavailableResponse,
   ApiTags,
   ApiUnauthorizedResponse,
 } from '@nestjs/swagger';
@@ -352,6 +354,7 @@ export class CasesController {
   }
 
   @Post('campuses/:campusId/cases/:caseId/decision')
+  @HttpCode(200)
   @ApiOperation({
     summary:
       'Campus-manager decision on a case (campus.cases.decide; approved_cancel also requires campus.refunds.initiate)',
@@ -386,6 +389,10 @@ export class CasesController {
   @ApiConflictResponse({
     description:
       'CASE_ALREADY_DECIDED, ORDER_CANCEL_CONFLICT (post-handover/terminal order) or REFUND_ALREADY_EXISTS',
+  })
+  @ApiServiceUnavailableResponse({
+    description:
+      'REFUNDS_PROVIDER_DISABLED: approved_cancel requires an active refund provider and the whole decision is rolled back while it is disabled (always in production)',
   })
   @ApiUnauthorizedResponse({ description: 'Bearer authentication is required' })
   async decide(

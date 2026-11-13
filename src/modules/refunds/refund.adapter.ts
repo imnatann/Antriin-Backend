@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { Injectable, ServiceUnavailableException } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 
 /**
@@ -103,14 +103,21 @@ export class SandboxRefundAdapter implements RefundProviderAdapter {
     };
   }
 
+  /**
+   * A disabled provider is a PERMANENT configuration condition: retrying can
+   * never succeed, so it must not burn the transient retry budget. The refund
+   * is parked for human assistance on the first attempt instead (the HTTP 503
+   * contract still applies at RefundsService.initiateCancellationRefund, which
+   * refuses to create a refund at all while the mode is disabled).
+   */
   private assertSandbox(): void {
     if (
       this.config.getOrThrow<string>('NODE_ENV') === 'production' ||
       this.config.get<string>('REFUNDS_PROVIDER_MODE') !== 'sandbox'
     )
-      throw new ServiceUnavailableException({
-        code: 'REFUNDS_PROVIDER_DISABLED',
-        message: 'Sandbox refunds are not available in this mode',
-      });
+      throw new PermanentRefundRequestError(
+        'REFUNDS_PROVIDER_DISABLED',
+        'Sandbox refunds are not available in this mode',
+      );
   }
 }

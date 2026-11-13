@@ -203,6 +203,8 @@ async function createOrder(
   opts: {
     status?: 'paid_awaiting_tenant' | 'completed';
     amountMinor?: string;
+    /** false leaves the order without any order_payments row (F3). */
+    withPayment?: boolean;
   } = {},
 ) {
   const amountMinor = opts.amountMinor ?? '50000';
@@ -265,26 +267,29 @@ async function createOrder(
     ORDER_PAYMENT_ESCROW_ACCOUNT,
     'IDR',
   );
-  const posted = await wallet.postTransfer({
-    idempotencyScope: 'test.refunds.checkout',
-    idempotencyKey: randomUUID(),
-    reference: { namespace: 'test-order-payment', id: randomUUID() },
-    currency: 'IDR',
-    amountMinor,
-    debitAccountId: buyerWallet.accountId,
-    creditAccountId: escrow.accountId,
-    actor: { type: 'service', id: 'test-fixture' },
-    reason: 'refund fixture order payment',
-  });
-  const orderPaymentId = (
-    await pool.query<{ id: string }>(
-      `insert into order_payments
-       (order_id, method, status, amount_minor, currency, ledger_transaction_id, succeeded_at, created_at, updated_at)
-     values ($1, 'wallet', 'succeeded', $2, 'IDR', $3, now(), now(), now())
-     returning id`,
-      [orderId, amountMinor, posted.transactionId],
-    )
-  ).rows[0].id;
+  let orderPaymentId: string | null = null;
+  if (opts.withPayment !== false) {
+    const posted = await wallet.postTransfer({
+      idempotencyScope: 'test.refunds.checkout',
+      idempotencyKey: randomUUID(),
+      reference: { namespace: 'test-order-payment', id: randomUUID() },
+      currency: 'IDR',
+      amountMinor,
+      debitAccountId: buyerWallet.accountId,
+      creditAccountId: escrow.accountId,
+      actor: { type: 'service', id: 'test-fixture' },
+      reason: 'refund fixture order payment',
+    });
+    orderPaymentId = (
+      await pool.query<{ id: string }>(
+        `insert into order_payments
+         (order_id, method, status, amount_minor, currency, ledger_transaction_id, succeeded_at, created_at, updated_at)
+       values ($1, 'wallet', 'succeeded', $2, 'IDR', $3, now(), now(), now())
+       returning id`,
+        [orderId, amountMinor, posted.transactionId],
+      )
+    ).rows[0].id;
+  }
   if (status === 'completed') {
     await pool.query(
       `insert into slot_reservations (tenant_id, slot_id, order_id, status, created_at, consumed_at, updated_at)
@@ -316,6 +321,87 @@ function httpCode(error: unknown): string | undefined {
   return typeof error === 'object' && error !== null && 'response' in error
     ? ((error as { response: { code?: string } }).response?.code ?? undefined)
     : undefined;
+}
+
+function sqlState(code: string) {
+  return (error: unknown) =>
+    typeof error === 'object' &&
+    error !== null &&
+    'code' in error &&
+    (error as { code?: string }).code === code;
+}
+
+type RefundInsert = {
+  status?: string;
+  amountMinor?: string;
+  currency?: string;
+  reason?: string;
+  succeededAt?: Date | null;
+  failedAt?: Date | null;
+  ledgerTransactionId?: string | null;
+  orderPaymentId?: string | null;
+};
+
+/** Raw insert so the DB CHECK/UNIQUE invariants are exercised without the service. */
+function insertRefundRow(
+  pool: Pool,
+  env: Env,
+  order: { orderId: string; orderPaymentId: string | null },
+  overrides: RefundInsert = {},
+) {
+  return pool.query(
+    `insert into refunds
+       (campus_id, tenant_id, order_id, order_payment_id, buyer_id, amount_minor,
+        currency, status, provider, reason, requested_by_user_id,
+        ledger_transaction_id, requested_at, succeeded_at, failed_at,
+        attempt_count, version, created_at, updated_at)
+     values ($1, $2, $3, $4, $5, $6, $7, $8, 'sandbox', $9, $10, $11, now(), $12, $13, 0, 1, now(), now())`,
+    [
+      env.campusId,
+      env.tenantId,
+      order.orderId,
+      overrides.orderPaymentId ?? order.orderPaymentId,
+      env.buyerId,
+      overrides.amountMinor ?? '50000',
+      overrides.currency ?? 'IDR',
+      overrides.status ?? 'requested',
+      overrides.reason ?? 'constraint probe',
+      env.adminId,
+      overrides.ledgerTransactionId ?? null,
+      overrides.succeededAt ?? null,
+      overrides.failedAt ?? null,
+    ],
+  );
+}
+
+type LedgerEntry = {
+  direction: string;
+  amount_minor: string;
+  account_id: string;
+};
+
+/** The refund's OWN ledger transaction entries (never a shared balance). */
+async function refundLedgerEntries(
+  pool: Pool,
+  refundId: string,
+): Promise<LedgerEntry[]> {
+  const result = await pool.query<LedgerEntry>(
+    `select e.direction, e.amount_minor::text, e.account_id::text
+       from ledger_entries e
+       join ledger_transactions tx on tx.id = e.transaction_id
+      where tx.reference_namespace = 'refund' and tx.reference_id = $1`,
+    [refundId],
+  );
+  return result.rows;
+}
+
+function sumMinor(
+  entries: LedgerEntry[],
+  direction: 'debit' | 'credit',
+): bigint {
+  return entries
+    .filter((entry) => entry.direction === direction)
+    .reduce((total, entry) => total + BigInt(entry.amount_minor), 0n);
 }
 
 describe(
@@ -598,6 +684,28 @@ describe(
         order.buyerWalletAccountId,
         'credit lands in the buyer wallet',
       );
+      // Review F2: the DEBIT side is asserted from this refund's own ledger
+      // transaction (never from a shared escrow balance, which other suites
+      // mutate in parallel). Exactly two entries, balanced, debiting the
+      // orders.payment.escrow system account (D16.1).
+      const debit = entries.rows.find((e) => e.direction === 'debit');
+      assert.equal(
+        debit?.account_id,
+        order.escrowAccountId,
+        'debit leaves the orders.payment.escrow system account',
+      );
+      const debitTotal = entries.rows
+        .filter((e) => e.direction === 'debit')
+        .reduce((sum, e) => sum + BigInt(e.amount_minor), 0n);
+      const creditTotal = entries.rows
+        .filter((e) => e.direction === 'credit')
+        .reduce((sum, e) => sum + BigInt(e.amount_minor), 0n);
+      assert.equal(creditTotal, debitTotal, 'double-entry is balanced');
+      assert.equal(
+        debitTotal,
+        BigInt(view.amountMinor),
+        'exactly the refund amount leaves escrow',
+      );
       const eventRow = await pool.query<{
         event_type: string;
         processed_at: Date | null;
@@ -728,6 +836,17 @@ describe(
       assert.equal(row.rows[0].succeeded_at, null);
       assert.equal(row.rows[0].ledger_transaction_id, null);
       assert.equal(row.rows[0].last_error, 'PROVIDER_REJECTED');
+      const failedEntries = await pool.query<{ n: number }>(
+        `select count(*)::int as n from ledger_entries e
+           join ledger_transactions tx on tx.id = e.transaction_id
+          where tx.reference_namespace = 'refund' and tx.reference_id = $1`,
+        [view.id],
+      );
+      assert.equal(
+        failedEntries.rows[0].n,
+        0,
+        'a failed refund posts no ledger entries at all (neither side)',
+      );
       const eventRow = await pool.query<{ event_type: string }>(
         'select event_type from refund_provider_events where refund_id = $1',
         [view.id],
@@ -994,6 +1113,445 @@ describe(
         [order.orderId],
       );
       assert.equal(rows.rowCount, 0);
+    });
+
+    // Review F3: the docs claimed this path was tested but no test existed.
+    it('refuses a refund for an order without a captured payment (409, no side effects)', async () => {
+      const env = await createEnv(pool);
+      const order = await createOrder(pool, svc.wallet, env, {
+        withPayment: false,
+      });
+      await assert.rejects(
+        svc.refunds.initiateCancellationRefund({
+          actorUserId: env.adminId,
+          campusId: env.campusId,
+          orderId: order.orderId,
+          reason: 'no captured payment',
+        }),
+        (error: unknown) => httpCode(error) === 'ORDER_PAYMENT_NOT_REFUNDABLE',
+      );
+      const orderRow = await pool.query<{
+        status: string;
+        cancelled_at: Date | null;
+        version: number;
+      }>('select status, cancelled_at, version from orders where id = $1', [
+        order.orderId,
+      ]);
+      assert.equal(orderRow.rows[0].status, 'paid_awaiting_tenant');
+      assert.equal(orderRow.rows[0].cancelled_at, null);
+      assert.equal(orderRow.rows[0].version, 1, 'the order was never mutated');
+      assert.equal(
+        (
+          await pool.query('select id from refunds where order_id = $1', [
+            order.orderId,
+          ])
+        ).rowCount,
+        0,
+      );
+      const reservation = await pool.query<{ status: string }>(
+        'select status from slot_reservations where order_id = $1',
+        [order.orderId],
+      );
+      assert.equal(
+        reservation.rows[0].status,
+        'reserved',
+        'the reservation is not released by a rejected refund',
+      );
+      assert.equal(
+        (
+          await pool.query(
+            'select id from refund_request_outbox where refund_id in (select id from refunds where order_id = $1)',
+            [order.orderId],
+          )
+        ).rowCount,
+        0,
+      );
+    });
+
+    // Review F4: "exactly once" must hold when two workers run concurrently.
+    it('credits exactly once when two workers race for the same refund', async () => {
+      const env = await createEnv(pool);
+      const order = await createOrder(pool, svc.wallet, env);
+      const view = await svc.refunds.initiateCancellationRefund({
+        actorUserId: env.adminId,
+        campusId: env.campusId,
+        orderId: order.orderId,
+        reason: 'parallel workers, expired lease',
+      });
+      // An expired lease makes the row due for BOTH workers at once.
+      await pool.query(
+        "update refund_request_outbox set status = 'processing', attempts = 0, lease_until = now() - interval '5 seconds', updated_at = now() where refund_id = $1",
+        [view.id],
+      );
+      const settled = await Promise.allSettled([
+        svc.refunds.processRefundRequest(view.id),
+        svc.refunds.processRefundRequest(view.id),
+      ]);
+      const outcomes = settled.map((result) =>
+        result.status === 'fulfilled' ? result.value : { outcome: 'rejected' },
+      );
+      assert.equal(
+        outcomes.filter((outcome) => outcome.outcome === 'succeeded').length,
+        1,
+        'exactly one worker applies the success',
+      );
+      const skipped = outcomes.filter(
+        (outcome) => outcome.outcome === 'skipped',
+      );
+      assert.equal(skipped.length, 1);
+      const reason = (skipped[0] as { reason?: string }).reason;
+      assert.ok(
+        reason === 'leased' || reason === 'done',
+        'the losing worker is fenced by the lease (got ' + String(reason) + ')',
+      );
+
+      const entries = await refundLedgerEntries(pool, view.id);
+      assert.equal(entries.length, 2, 'one balanced transfer, not two');
+      assert.equal(sumMinor(entries, 'debit'), 50000n);
+      assert.equal(sumMinor(entries, 'credit'), 50000n);
+      assert.equal(
+        entries.find((entry) => entry.direction === 'debit')?.account_id,
+        order.escrowAccountId,
+      );
+      assert.equal(
+        entries.find((entry) => entry.direction === 'credit')?.account_id,
+        order.buyerWalletAccountId,
+      );
+      assert.equal(
+        (
+          await pool.query(
+            'select count(*)::int as n from refund_provider_events where refund_id = $1',
+            [view.id],
+          )
+        ).rows[0].n,
+        1,
+      );
+      const refundRow = await pool.query<{ status: string; version: number }>(
+        'select status, version from refunds where id = $1',
+        [view.id],
+      );
+      assert.equal(refundRow.rows[0].status, 'succeeded');
+      assert.equal(refundRow.rows[0].version, 2, 'one succeeded transition');
+      assert.equal(
+        (await svc.wallet.getBalance(env.buyerId, 'IDR'))[0].balanceMinor,
+        '100000',
+        'the buyer is credited exactly once',
+      );
+    });
+
+    it('credits exactly once when both workers reach the success path', async () => {
+      const env = await createEnv(pool);
+      const order = await createOrder(pool, svc.wallet, env);
+      const view = await svc.refunds.initiateCancellationRefund({
+        actorUserId: env.adminId,
+        campusId: env.campusId,
+        orderId: order.orderId,
+        reason: 'parallel workers, both inside the provider call',
+      });
+
+      let releaseFirst!: () => void;
+      let signalFirst!: () => void;
+      const firstInsideProvider = new Promise<void>((resolve) => {
+        signalFirst = resolve;
+      });
+      const holdFirst = new Promise<void>((resolve) => {
+        releaseFirst = resolve;
+      });
+      const gated = refundsWithAdapter(svc, {
+        provider: 'sandbox',
+        buildProviderReference: (input) =>
+          svc.adapter.buildProviderReference(input),
+        submitRefund: async (input) => {
+          signalFirst();
+          await holdFirst;
+          return {
+            status: 'succeeded',
+            providerReference: input.providerReference,
+            occurredAt: new Date(),
+          };
+        },
+      });
+      const firstWorker = gated.processRefundRequest(view.id);
+      await firstInsideProvider;
+      // Worker A is inside the provider call, holding no lock. Simulate its
+      // lease expiring so worker B leases the same row and both reach
+      // applyRefundSuccess: only the in-transaction guards (row lock, status
+      // guard, provider-event dedupe, ledger idempotency) can stop a double
+      // credit now.
+      await pool.query(
+        "update refund_request_outbox set status = 'pending', lease_until = null, next_attempt_at = now(), updated_at = now() where refund_id = $1",
+        [view.id],
+      );
+      const secondWorker = await (async () => {
+        try {
+          return await svc.refunds.processRefundRequest(view.id);
+        } finally {
+          releaseFirst();
+        }
+      })();
+      assert.equal(secondWorker.outcome, 'succeeded');
+      const firstResult = await firstWorker;
+      assert.equal(
+        firstResult.outcome,
+        'duplicate',
+        'the late worker sees a settled refund and must not credit again',
+      );
+
+      const entries = await refundLedgerEntries(pool, view.id);
+      assert.equal(entries.length, 2);
+      assert.equal(sumMinor(entries, 'debit'), 50000n);
+      assert.equal(sumMinor(entries, 'credit'), 50000n);
+      assert.equal(
+        entries.find((entry) => entry.direction === 'debit')?.account_id,
+        order.escrowAccountId,
+      );
+      assert.equal(
+        entries.find((entry) => entry.direction === 'credit')?.account_id,
+        order.buyerWalletAccountId,
+      );
+      assert.equal(
+        (
+          await pool.query(
+            'select count(*)::int as n from refund_provider_events where refund_id = $1',
+            [view.id],
+          )
+        ).rows[0].n,
+        1,
+      );
+      assert.equal(
+        (
+          await pool.query(
+            "select count(*)::int as n from audit_events where target_type = 'refund' and target_id = $1 and action = 'refund.succeeded'",
+            [view.id],
+          )
+        ).rows[0].n,
+        1,
+      );
+      const refundRow = await pool.query<{ status: string; version: number }>(
+        'select status, version from refunds where id = $1',
+        [view.id],
+      );
+      assert.equal(refundRow.rows[0].status, 'succeeded');
+      assert.equal(refundRow.rows[0].version, 2);
+      assert.equal(
+        (await svc.wallet.getBalance(env.buyerId, 'IDR'))[0].balanceMinor,
+        '100000',
+      );
+    });
+
+    // Review F5: the DB invariants were only proven by manual probes.
+    it('enforces the refunds CHECK constraints and the one-live-refund invariant', async () => {
+      const env = await createEnv(pool);
+      const reject = sqlState('23514');
+
+      // Positive controls: a plain pending refund and a complete succeeded one.
+      await insertRefundRow(
+        pool,
+        env,
+        await createOrder(pool, svc.wallet, env),
+      );
+      const ledgerSource = await createOrder(pool, svc.wallet, env);
+      const ledgerTxId = (
+        await pool.query<{ ledger_transaction_id: string }>(
+          'select ledger_transaction_id from order_payments where id = $1',
+          [ledgerSource.orderPaymentId],
+        )
+      ).rows[0].ledger_transaction_id;
+      assert.equal(
+        (
+          await insertRefundRow(
+            pool,
+            env,
+            await createOrder(pool, svc.wallet, env),
+            {
+              status: 'succeeded',
+              succeededAt: new Date(),
+              ledgerTransactionId: ledgerTxId,
+            },
+          )
+        ).rowCount,
+        1,
+      );
+
+      const probe = await createOrder(pool, svc.wallet, env);
+      // succeeded requires BOTH succeeded_at and ledger_transaction_id.
+      await assert.rejects(
+        insertRefundRow(pool, env, probe, { status: 'succeeded' }),
+        reject,
+      );
+      await assert.rejects(
+        insertRefundRow(pool, env, probe, {
+          status: 'succeeded',
+          succeededAt: new Date(),
+        }),
+        reject,
+      );
+      // failed requires failed_at.
+      await assert.rejects(
+        insertRefundRow(pool, env, probe, { status: 'failed' }),
+        reject,
+      );
+      // ...and the reverse direction: a non-terminal status cannot carry them.
+      await assert.rejects(
+        insertRefundRow(pool, env, probe, {
+          status: 'requested',
+          succeededAt: new Date(),
+        }),
+        reject,
+      );
+      await assert.rejects(
+        insertRefundRow(pool, env, probe, {
+          status: 'requested',
+          failedAt: new Date(),
+        }),
+        reject,
+      );
+      // Money guards: integer minor units, positive, IDR only.
+      await assert.rejects(
+        insertRefundRow(pool, env, probe, { amountMinor: '0' }),
+        reject,
+      );
+      await assert.rejects(
+        insertRefundRow(pool, env, probe, { amountMinor: '50000.5' }),
+        reject,
+      );
+      await assert.rejects(
+        insertRefundRow(pool, env, probe, { currency: 'USD' }),
+        reject,
+      );
+      await assert.rejects(
+        insertRefundRow(pool, env, probe, { reason: '   ' }),
+        reject,
+      );
+
+      // A pending refund cannot be flipped to succeeded without a ledger row.
+      const updatable = await createOrder(pool, svc.wallet, env);
+      await insertRefundRow(pool, env, updatable);
+      await assert.rejects(
+        pool.query(
+          "update refunds set status = 'succeeded', succeeded_at = now() where order_id = $1",
+          [updatable.orderId],
+        ),
+        reject,
+      );
+
+      // One LIVE refund per order; a failed one frees the order for a retry.
+      const duplicate = await createOrder(pool, svc.wallet, env);
+      await insertRefundRow(pool, env, duplicate);
+      await assert.rejects(
+        insertRefundRow(pool, env, duplicate),
+        sqlState('23505'),
+      );
+      await pool.query(
+        "update refunds set status = 'failed', failed_at = now() where order_id = $1",
+        [duplicate.orderId],
+      );
+      assert.equal(
+        (await insertRefundRow(pool, env, duplicate)).rowCount,
+        1,
+        'a failed refund no longer blocks a new live attempt',
+      );
+    });
+
+    // Review F9: a disabled provider is deterministic, not transient.
+    it('parks a refund immediately when the provider mode was switched off', async () => {
+      const env = await createEnv(pool);
+      const order = await createOrder(pool, svc.wallet, env);
+      const view = await svc.refunds.initiateCancellationRefund({
+        actorUserId: env.adminId,
+        campusId: env.campusId,
+        orderId: order.orderId,
+        reason: 'created while sandbox was active',
+      });
+      const worker = refundsWithAdapter(
+        svc,
+        new SandboxRefundAdapter(
+          makeConfig({ REFUNDS_PROVIDER_MODE: 'disabled' }),
+        ),
+      );
+      const result = await worker.processRefundRequest(view.id);
+      assert.equal(
+        result.outcome,
+        'needs_assistance',
+        'the FIRST attempt parks it; it must not burn five transient retries',
+      );
+      if (result.outcome === 'needs_assistance')
+        assert.equal(result.errorCode, 'REFUNDS_PROVIDER_DISABLED');
+      const outbox = await pool.query<{
+        status: string;
+        attempts: number;
+        last_error: string | null;
+      }>(
+        'select status, attempts, last_error from refund_request_outbox where refund_id = $1',
+        [view.id],
+      );
+      assert.equal(outbox.rows[0].attempts, 1, 'exactly one provider attempt');
+      assert.equal(outbox.rows[0].status, 'dead');
+      assert.equal(outbox.rows[0].last_error, 'REFUNDS_PROVIDER_DISABLED');
+      const refundRow = await pool.query<{
+        status: string;
+        last_error: string | null;
+      }>('select status, last_error from refunds where id = $1', [view.id]);
+      assert.equal(refundRow.rows[0].status, 'needs_assistance');
+      assert.equal(refundRow.rows[0].last_error, 'REFUNDS_PROVIDER_DISABLED');
+      assert.equal(
+        (await refundLedgerEntries(pool, view.id)).length,
+        0,
+        'no credit on a disabled provider',
+      );
+      assert.equal(
+        (await svc.wallet.getBalance(env.buyerId, 'IDR'))[0].balanceMinor,
+        '50000',
+      );
+    });
+
+    // Review F7 / D7: mutation responses carry the DB's microsecond value.
+    it('returns DB microsecond timestamps instead of millisecond ISO strings', async () => {
+      const env = await createEnv(pool);
+      const order = await createOrder(pool, svc.wallet, env);
+      const pattern = /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{6}Z$/;
+      const view = await svc.refunds.initiateCancellationRefund({
+        actorUserId: env.adminId,
+        campusId: env.campusId,
+        orderId: order.orderId,
+        reason: 'timestamp shape',
+      });
+      assert.match(view.requestedAt, pattern);
+      assert.match(view.createdAt, pattern);
+      assert.match(view.updatedAt, pattern);
+      const inserted = await pool.query<{
+        requested_at: string;
+        created_at: string;
+        updated_at: string;
+      }>(
+        `select to_char(requested_at at time zone 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as requested_at,
+                to_char(created_at at time zone 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as created_at,
+                to_char(updated_at at time zone 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as updated_at
+           from refunds where id = $1`,
+        [view.id],
+      );
+      assert.equal(
+        view.requestedAt,
+        inserted.rows[0].requested_at,
+        'the exact DB value, never a re-serialized Date',
+      );
+      assert.equal(view.createdAt, inserted.rows[0].created_at);
+      assert.equal(view.updatedAt, inserted.rows[0].updated_at);
+
+      await svc.refunds.processRefundRequest(view.id);
+      const succeeded = await svc.refunds.getRefundForOrder(
+        env.buyerId,
+        order.orderId,
+      );
+      assert.ok(succeeded);
+      assert.match(succeeded.succeededAt ?? '', pattern);
+      assert.match(succeeded.updatedAt, pattern);
+      const succeededRow = await pool.query<{ succeeded_at: string }>(
+        `select to_char(succeeded_at at time zone 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as succeeded_at
+           from refunds where id = $1`,
+        [view.id],
+      );
+      assert.equal(succeeded.succeededAt, succeededRow.rows[0].succeeded_at);
     });
   },
 );
