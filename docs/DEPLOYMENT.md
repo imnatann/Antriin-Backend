@@ -68,7 +68,25 @@ API di-bind ke `0.0.0.0:3000` lewat `API_BIND_ADDRESS`.
 
 ## Status terverifikasi (13 Nov 2026)
 
-Deploy pertama berjalan end-to-end dan diverifikasi dari internet publik:
+Deploy berjalan end-to-end dan diverifikasi dari internet publik.
+
+### Deploy terakhir — commit `9eb17c2`
+
+| Pemeriksaan                                   | Hasil                                                                                          |
+| --------------------------------------------- | ---------------------------------------------------------------------------------------------- |
+| CI                                            | [run 43390996820](https://github.com/imnatann/Antriin-Backend/actions/runs/43390996820) sukses |
+| Deploy workflow                               | [run 43391160350](https://github.com/imnatann/Antriin-Backend/actions/runs/43391160350) sukses |
+| Image berjalan                                | `ghcr.io/imnatann/antriin-backend:9eb17c2ece4b`                                                |
+| `antriin-api-1`                               | Up, healthy                                                                                    |
+| `antriin-worker-1`                            | Up                                                                                             |
+| `GET /api/v1/health/live`                     | 200                                                                                            |
+| `GET /api/v1/health/ready`                    | 200, database & redis true                                                                     |
+| `GET /api/v1/guide` (+`.md`, `/openapi.json`) | 200, 109 operasi / 89 path / 47 object                                                         |
+| `GET /docs`                                   | 200, Swagger                                                                                   |
+| `GET /v1/health/live`                         | 404 — prefix lama sudah tidak dilayani                                                         |
+| Migrasi `0000..0010`                          | 11 entri, 55 tabel (termasuk 4 tabel ulasan)                                                   |
+
+### Deploy pertama — commit `284e0d5`
 
 | Pemeriksaan                   | Hasil                                                                                          |
 | ----------------------------- | ---------------------------------------------------------------------------------------------- |
@@ -88,8 +106,6 @@ Dua kegagalan deploy pertama berasal dari workflow, bukan dari aplikasi:
 
 1. `jobs.<id>.environment.url` tidak boleh memakai konteks `secrets`. Itu membuat seluruh file workflow invalid sehingga run muncul tanpa job. `url` dihapus; endpoint diverifikasi oleh langkah `curl` terakhir.
 2. Script remote semula dikirim lewat `ssh ... bash -s < script`. `docker compose run` mewarisi stdin dan menelan sisa script: migrasi selesai, script mencapai EOF, keluar 0, dan `api`/`worker` tidak pernah dinyalakan. Sekarang script dijalankan dari file di host dan perintah migrasi diberi `</dev/null`.
-
-## Batas yang belum diklaim
 
 ## Batas yang belum diklaim
 
