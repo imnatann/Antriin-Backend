@@ -110,6 +110,17 @@ Uangnya tetap di escrow dan dapat dilepas kemudian oleh release ulang (manual/re
 `releaseForOrder` idempoten. Pemanggil (pickup/cases) juga membungkus panggilan ini dengan
 `try/catch` sebagai lapisan kedua.
 
+**Dependensi wajib (F2).** `PickupService` sekarang **mewajibkan** `SettlementsService` (bukan
+`@Optional()`). Sebelumnya injeksi opsional + pemanggilan yang dibungkus `catch {}` membuat hook
+release bisa tidak pernah berjalan tanpa satu pun error: `test/pickup.spec.ts` mengonstruksi
+`PickupService` tanpa argumen settlements, sehingga 16 test pickup lulus tanpa pernah mengeksekusi
+pemicu release. Dengan dependensi wajib, wiring yang rusak gagal saat boot modul
+(`test/payouts-di.spec.ts`), dan `test/pickup.spec.ts` membangun `SettlementsService` asli serta
+membuktikan: handover sukses -> satu baris `settlements` `available` + satu leg ledger seimbang
+(escrow debit = `tenant.payable.<tenantId>` credit = total order); dan bila release melempar error,
+handover tetap sukses/COMMIT tanpa settlement, tanpa hold, dengan dana tetap di escrow dan release
+masih dapat diulang.
+
 ## Akun ledger (D16.1 + D18 Q1)
 
 | System key                      | Status | Peran                                                    |
@@ -184,8 +195,11 @@ Semua method menerima `PoolClient` milik transaksi pemanggil dan tidak pernah co
 
 Tiga method terakhir adalah **penambahan kecil** pada slice lain (method baru, perilaku lama tidak
 berubah); schema/migrasi tidak disentuh. Dependensi melingkar `settlements <-> cases` diselesaikan
-dengan `forwardRef` di kedua module, dan parameter `SettlementsService` pada `CasesService`/
-`PickupService` bersifat `@Optional()` agar konstruksi manual (test/script) tetap bekerja.
+dengan `forwardRef` di kedua module. Parameter `SettlementsService` pada `CasesService` masih
+`@Optional()`, tetapi pada **`PickupService` sudah WAJIB** (F2): hook release handover adalah satu-satunya
+jalur yang memindahkan uang order ke payable, jadi wiring yang hilang harus gagal keras. Smoke test
+`test/payouts-di.spec.ts` mem-boot `PickupModule + CasesModule + SettlementsModule + PayoutsModule`
+bersama dan memastikan keempat injeksi terisi serta siklus `forwardRef` resolve.
 
 ## Kode error kontrak
 
@@ -217,6 +231,16 @@ terverifikasi), 404/403 dari access untuk tenant lain.
   internal), belum ada void settlement dari slice refunds (refund dan release saling eksklusif per
   order), dan belum ada job penyapu order `completed` yang tertahan.
 
+### Ditunda: pemantauan kampus (F9)
+
+`GET /v1/campuses/:campusId/settlements` (`campus.transactions.read`, desain §7) **belum dibuat**.
+Alasannya: permintaan review F9 hanya mewajibkan endpoint pemantauan payout, dan menambah endpoint
+kedua memperluas permukaan baca lintas modul (ringkasan settlement per kampus butuh agregasi
+`settlements` + `orders` + `payout_allocations` yang belum punya kontrak). Status penundaan ini
+dicatat eksplisit di sini dan di [payouts.md](payouts.md); route **tidak** didaftarkan, sehingga
+request ke path itu menghasilkan 404 (bukan 200 kosong). Yang sudah ada: pemantauan payout kampus
+`GET /v1/campuses/:campusId/payouts` (`campus.payouts.read`, read-only, tersamarkan).
+
 ## Pengujian
 
 `test/settlements.spec.ts` (13 test PostgreSQL): release memindahkan tepat `amount_minor` (dibuktikan
@@ -232,3 +256,14 @@ identitas rekonsiliasi §4.4 (1)(4)(5).
 `test/settlements-http.spec.ts` (5 test transport, tanpa DB): 401 di kedua route, bentuk respons
 (string minor unit, timestamp mikrodetik), 403 saat service menolak, paging + limit/cursor/field asing
 ditolak 400, dan tenant id tidak sah ditolak sebelum service.
+
+`test/schema-integrity-0009.spec.ts` (14 test PostgreSQL, review F1): constraint migrasi 0009 diuji
+dengan SQL langsung - setiap pelanggaran diassert lewat SQLSTATE + nama constraint persis, dan tiap
+kelompok punya kontrol positif. Cakupan: `settlements_one_per_order_uq`, FK komposit
+`settlements_tenant_order_fk`/`settlements_order_payment_fk` (23503), `settlements_amount_check`
+(0/negatif/pecahan), `settlements_status_timestamps_check` (`available` tanpa `released_at`,
+`paid_out` dengan `paid_out_minor != amount`, `pending`/`voided`), `payouts_one_active_per_tenant_uq`,
+`payouts_ledger_legs_check` (dua leg terminal, `succeeded` tanpa settle, `failed` tanpa release),
+`payouts_amount_check`, `bank_accounts_verification_check`, `bank_accounts_hash_check`,
+`payout_allocations` UNIQUE + FK komposit lintas tenant, `payout_provider_events`,
+`payout_attempts_no_check`/`finished_check`, dan `payout_events_actor_check`/`version_uq`.

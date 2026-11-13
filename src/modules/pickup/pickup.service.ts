@@ -5,7 +5,6 @@ import {
   Inject,
   Injectable,
   NotFoundException,
-  Optional,
   ServiceUnavailableException,
   forwardRef,
 } from '@nestjs/common';
@@ -141,11 +140,14 @@ export class PickupService {
     private readonly orders: OrdersService,
     private readonly audit: AuditService,
     private readonly config: ConfigService,
-    // Optional so hand-built constructions (tests, scripts) keep working; Nest
-    // always injects it. Only the additive release hook below uses it.
-    @Optional()
+    // REQUIRED (review F2): the settlement release hook is the only path that
+    // moves money from escrow to the tenant payable balance, so a missing
+    // dependency must fail at wiring time instead of silently disabling the
+    // hook. PickupModule imports forwardRef(SettlementsModule), which exports
+    // SettlementsService; test/payouts-di.spec.ts boots all four modules
+    // together to prove the cycle still resolves.
     @Inject(forwardRef(() => SettlementsService))
-    private readonly settlements?: SettlementsService,
+    private readonly settlements: SettlementsService,
   ) {}
 
   /**
@@ -588,17 +590,15 @@ export class PickupService {
       // legitimate handover: the settlements slice contains it with a
       // savepoint and records a deferred/failed audit row, leaving the money in
       // escrow for a retry release.
-      if (this.settlements) {
-        try {
-          await this.settlements.releaseAfterHandover(
-            client,
-            tenantId,
-            order.orderId,
-            actorUserId,
-          );
-        } catch {
-          // Contained twice on purpose: a business handover always wins.
-        }
+      try {
+        await this.settlements.releaseAfterHandover(
+          client,
+          tenantId,
+          order.orderId,
+          actorUserId,
+        );
+      } catch {
+        // Contained twice on purpose: a business handover always wins.
       }
       const consumed = await client.query<{ id: string }>(
         `UPDATE pickup_credentials

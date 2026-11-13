@@ -108,6 +108,26 @@ export type PayoutDetail = {
 
 export type PayoutPage = { items: PayoutView[]; nextCursor: string | null };
 
+/**
+ * Campus-wide monitoring row (REQUIREMENTS 3.8.7): read-only, always masked,
+ * never carries a full account number and never exposes a way to move money.
+ */
+export type CampusPayoutView = {
+  payoutId: string;
+  tenantId: string;
+  tenantName: string;
+  status: PayoutStatus;
+  amountMinor: string;
+  currency: string;
+  bankCode: string;
+  accountNumberMasked: string;
+  requestedAt: string;
+  processingAt: string | null;
+  succeededAt: string | null;
+  failedAt: string | null;
+  cancelledAt: string | null;
+};
+
 export type RequestPayoutInput = {
   bankAccountId: string;
   amountMinor: string;
@@ -302,13 +322,14 @@ export class PayoutsService {
       // or disabled account is a 409 (D18 Q4 - never pay an unproven account).
       const account = await tx.query<{
         id: string;
+        tenant_id: string;
         bank_code: string;
         account_number_masked: string;
         account_holder_name: string;
         verification_status: string;
         status: string;
       }>(
-        `select id::text, bank_code, account_number_masked,
+        `select id::text, tenant_id::text, bank_code, account_number_masked,
                 account_holder_name, verification_status, status
            from bank_accounts
           where id = $1 and tenant_id = $2
@@ -317,6 +338,12 @@ export class PayoutsService {
       );
       const destination = account.rows[0];
       if (!destination)
+        throw new NotFoundException('Bank account was not found');
+      // F4: payouts.bank_account_id is a SINGLE-column FK (the composite
+      // (tenant_id, id) FK is scheduled for the next migration, see
+      // docs/modules/payouts.md), so the tenant boundary is enforced here and
+      // re-asserted from the row itself instead of trusting the predicate.
+      if (destination.tenant_id !== tenantId)
         throw new NotFoundException('Bank account was not found');
       if (
         destination.status !== 'active' ||
@@ -650,6 +677,109 @@ export class PayoutsService {
       'tenant.finance.read',
     );
     return this.loadDetail(this.database.pool, tenantId, payoutId);
+  }
+
+  /**
+   * Campus monitoring read (REQUIREMENTS 3.8.7, design section 7): every payout
+   * of the tenants that belong to ONE campus, scoped by campus permission
+   * campus.payouts.read. Strictly read-only and masked - the campus manager can
+   * watch, never initiate, approve or retarget a payout.
+   *
+   * The campus boundary is derived from tenants.campus_id inside the query, so a
+   * payout of another campus can never be listed even with a forged path.
+   */
+  async listCampusPayouts(
+    actorUserId: string,
+    campusId: string,
+    options: { status?: string; cursor?: string; limit?: number } = {},
+  ): Promise<{ items: CampusPayoutView[]; nextCursor: string | null }> {
+    this.assertUuid(actorUserId, 'user id');
+    this.assertUuid(campusId, 'campus id');
+    await this.access.requireCampus(
+      actorUserId,
+      campusId,
+      'campus.payouts.read',
+    );
+    const limit = normalizeLimit(options.limit);
+    const cursor = options.cursor ? decodeCursor(options.cursor) : undefined;
+    if (options.status !== undefined && !isPayoutStatus(options.status))
+      throw new BadRequestException('Invalid payout status filter');
+    const values: unknown[] = [campusId];
+    let where = 't.campus_id = $1';
+    if (options.status !== undefined) {
+      values.push(options.status);
+      where += ' and p.status = $' + String(values.length);
+    }
+    if (cursor) {
+      values.push(cursor.createdAt, cursor.id);
+      where +=
+        ' and (p.created_at, p.id) < ($' +
+        String(values.length - 1) +
+        '::timestamptz, $' +
+        String(values.length) +
+        '::uuid)';
+    }
+    values.push(limit + 1);
+    const result = await this.database.pool.query<{
+      id: string;
+      tenant_id: string;
+      tenant_name: string;
+      status: PayoutStatus;
+      amount_minor: string;
+      currency: string;
+      bank_code: string;
+      account_number_masked: string;
+      requested_at: string;
+      processing_at: string | null;
+      succeeded_at: string | null;
+      failed_at: string | null;
+      cancelled_at: string | null;
+      cursor_created_at: string;
+    }>(
+      `select p.id::text, p.tenant_id::text, t.name as tenant_name, p.status,
+              p.amount_minor::text, p.currency, p.bank_code,
+              p.account_number_masked,
+              ${SQL_TS('p.requested_at')} as requested_at,
+              ${SQL_TS('p.processing_at')} as processing_at,
+              ${SQL_TS('p.succeeded_at')} as succeeded_at,
+              ${SQL_TS('p.failed_at')} as failed_at,
+              ${SQL_TS('p.cancelled_at')} as cancelled_at,
+              ${SQL_TS('p.created_at')} as cursor_created_at
+         from payouts p
+         join tenants t on t.id = p.tenant_id
+        where ${where}
+        order by p.created_at desc, p.id desc
+        limit $${String(values.length)}`,
+      values,
+    );
+    const rows = result.rows;
+    const hasMore = rows.length > limit;
+    const page = rows.slice(0, limit);
+    const last = page.at(-1);
+    return {
+      items: page.map((row) => ({
+        payoutId: row.id,
+        tenantId: row.tenant_id,
+        tenantName: row.tenant_name,
+        status: row.status,
+        amountMinor: row.amount_minor,
+        currency: row.currency,
+        bankCode: row.bank_code,
+        accountNumberMasked: row.account_number_masked,
+        requestedAt: row.requested_at,
+        processingAt: row.processing_at,
+        succeededAt: row.succeeded_at,
+        failedAt: row.failed_at,
+        cancelledAt: row.cancelled_at,
+      })),
+      nextCursor:
+        hasMore && last
+          ? encodeCursor({
+              createdAt: String(last.cursor_created_at),
+              id: last.id,
+            })
+          : null,
+    };
   }
 
   // -------------------------------------------------------------------------

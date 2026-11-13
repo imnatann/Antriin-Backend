@@ -18,6 +18,7 @@ import {
 import { ApiExceptionFilter } from '../src/common/api-exception.filter';
 import { AuthGuard } from '../src/modules/auth/auth.guard';
 import { BankAccountsService } from '../src/modules/payouts/bank-accounts.service';
+import { CampusPayoutsController } from '../src/modules/payouts/campus-payouts.controller';
 import { PayoutsController } from '../src/modules/payouts/payouts.controller';
 import { PayoutsService } from '../src/modules/payouts/payouts.service';
 
@@ -101,7 +102,9 @@ class StubBankAccountsService {
 
 class StubPayoutsService {
   requests: { idempotencyKey: string; amountMinor: string }[] = [];
+  campusCalls: { campusId: string; status?: string }[] = [];
   failure?: unknown;
+  replayed = false;
   async requestPayout(
     _actorUserId: string,
     _tenantId: string,
@@ -109,7 +112,35 @@ class StubPayoutsService {
   ) {
     this.requests.push(input);
     if (this.failure) throw this.failure;
-    return { payout: payoutView, replayed: false };
+    return { payout: payoutView, replayed: this.replayed };
+  }
+  async listCampusPayouts(
+    _actorUserId: string,
+    campusId: string,
+    options: { status?: string } = {},
+  ) {
+    this.campusCalls.push({ campusId, status: options.status });
+    if (this.failure) throw this.failure;
+    return {
+      items: [
+        {
+          payoutId: PAYOUT_ID,
+          tenantId: TENANT_ID,
+          tenantName: 'Kantin Uji',
+          status: 'requested' as const,
+          amountMinor: '10000',
+          currency: 'IDR',
+          bankCode: 'BCA',
+          accountNumberMasked: '****7890',
+          requestedAt: TS,
+          processingAt: null,
+          succeededAt: null,
+          failedAt: null,
+          cancelledAt: null,
+        },
+      ],
+      nextCursor: null,
+    };
   }
   async listTenantPayouts() {
     if (this.failure) throw this.failure;
@@ -311,6 +342,29 @@ describe('Payouts HTTP contract', () => {
     };
     assert.equal(body.data.status, 'requested');
     assert.equal(body.data.accountNumberMasked, '****7890');
+    // F7: a first request is not a replay, and the flag is part of the envelope.
+    assert.deepEqual(
+      (response.json() as { meta: { replayed: boolean } }).meta,
+      { replayed: false },
+    );
+  });
+
+  it('marks an Idempotency-Key replay in the response envelope (F7)', async () => {
+    payouts.replayed = true;
+    const response = await app.inject({
+      method: 'POST',
+      url: payoutsUrl,
+      headers: { ...auth, 'idempotency-key': 'payout-key-0004' },
+      payload: { bankAccountId: ACCOUNT_ID, amountMinor: '10000' },
+    });
+    assert.equal(response.statusCode, 201);
+    const body = response.json() as {
+      data: { id: string };
+      meta: { replayed: boolean };
+    };
+    assert.equal(body.meta.replayed, true);
+    assert.equal(body.data.id, PAYOUT_ID);
+    assert.equal(payouts.requests.length, 1);
   });
 
   it('maps domain conflicts and disabled providers to stable HTTP codes', async () => {
@@ -433,5 +487,150 @@ describe('Payouts HTTP contract', () => {
       },
     });
     assert.equal(create.statusCode, 403);
+  });
+});
+
+describe('Campus payout monitoring HTTP contract (F9)', () => {
+  const CAMPUS_ID = '55555555-5555-4555-8555-555555555555';
+  const url = '/v1/campuses/' + CAMPUS_ID + '/payouts';
+  let app: NestFastifyApplication;
+  let payouts: StubPayoutsService;
+
+  beforeEach(async () => {
+    payouts = new StubPayoutsService();
+    const guard = {
+      canActivate: (context: ExecutionContext) => {
+        const request = context.switchToHttp().getRequest<{
+          headers: { authorization?: string };
+          user?: { userId: string; sessionId: string };
+        }>();
+        if (request.headers.authorization !== 'Bearer test-token') {
+          throw new UnauthorizedException({
+            code: 'unauthorized',
+            message: 'A valid bearer token is required',
+          });
+        }
+        request.user = { userId: ACTOR_ID, sessionId: 'session-1' };
+        return true;
+      },
+    };
+    const module = await Test.createTestingModule({
+      controllers: [CampusPayoutsController],
+      providers: [{ provide: PayoutsService, useValue: payouts }],
+    })
+      .overrideGuard(AuthGuard)
+      .useValue(guard)
+      .compile();
+    app = module.createNestApplication<NestFastifyApplication>(
+      new FastifyAdapter(),
+    );
+    app.setGlobalPrefix('v1');
+    app.useGlobalPipes(
+      new ValidationPipe({
+        whitelist: true,
+        forbidNonWhitelisted: true,
+        transform: true,
+      }),
+    );
+    app.useGlobalFilters(new ApiExceptionFilter());
+    await app.init();
+    await app.getHttpAdapter().getInstance().ready();
+  });
+
+  afterEach(async () => {
+    await app.close();
+  });
+
+  it('requires a bearer token', async () => {
+    const response = await app.inject({ method: 'GET', url });
+    assert.equal(response.statusCode, 401);
+    assert.equal(payouts.campusCalls.length, 0);
+  });
+
+  it('returns the masked campus payout list with a cursor envelope', async () => {
+    const response = await app.inject({
+      method: 'GET',
+      url: url + '?status=requested&limit=5',
+      headers: { authorization: 'Bearer test-token' },
+    });
+    assert.equal(response.statusCode, 200);
+    const body = response.json() as {
+      data: {
+        payoutId: string;
+        accountNumberMasked: string;
+        tenantName: string;
+      }[];
+      meta: { next_cursor: string | null };
+    };
+    assert.equal(body.data.length, 1);
+    assert.equal(body.data[0].accountNumberMasked, '****7890');
+    assert.equal(body.data[0].tenantName, 'Kantin Uji');
+    assert.equal(body.meta.next_cursor, null);
+    assert.deepEqual(payouts.campusCalls, [
+      { campusId: CAMPUS_ID, status: 'requested' },
+    ]);
+    // No full account number, ciphertext or hash may ever leave this route.
+    const serialized = JSON.stringify(body);
+    for (const forbidden of ['ciphertext', 'accountNumberHash', '1234567890']) {
+      assert.ok(!serialized.includes(forbidden), forbidden);
+    }
+  });
+
+  it('maps permission failures and invalid filters to stable codes', async () => {
+    payouts.failure = new ForbiddenException('Campus permission denied');
+    const denied = await app.inject({
+      method: 'GET',
+      url,
+      headers: { authorization: 'Bearer test-token' },
+    });
+    assert.equal(denied.statusCode, 403);
+
+    payouts.failure = undefined;
+    const badStatus = await app.inject({
+      method: 'GET',
+      url: url + '?status=unknown',
+      headers: { authorization: 'Bearer test-token' },
+    });
+    assert.equal(badStatus.statusCode, 400);
+
+    const badCampus = await app.inject({
+      method: 'GET',
+      url: '/v1/campuses/not-a-uuid/payouts',
+      headers: { authorization: 'Bearer test-token' },
+    });
+    assert.equal(badCampus.statusCode, 400);
+    assert.equal(
+      payouts.campusCalls.length,
+      1,
+      'invalid input never reaches the service',
+    );
+  });
+
+  it('exposes no mutating campus payout route', async () => {
+    const forbidden: ['POST' | 'DELETE', string][] = [
+      ['POST', '/v1/campuses/' + CAMPUS_ID + '/payouts'],
+      [
+        'POST',
+        '/v1/campuses/' + CAMPUS_ID + '/payouts/' + PAYOUT_ID + '/cancel',
+      ],
+      ['DELETE', '/v1/campuses/' + CAMPUS_ID + '/payouts/' + PAYOUT_ID],
+    ];
+    for (const [method, target] of forbidden) {
+      const response = await app.inject({
+        method,
+        url: target,
+        headers: { authorization: 'Bearer test-token' },
+        payload: {},
+      });
+      assert.ok(
+        response.statusCode === 404 || response.statusCode === 405,
+        method +
+          ' ' +
+          target +
+          ' must not exist (got ' +
+          String(response.statusCode) +
+          ')',
+      );
+    }
   });
 });

@@ -7,6 +7,7 @@ import { OutboxModule } from '../notifications/outbox.module';
 import { SettlementsModule } from '../settlements/settlements.module';
 import { WalletModule } from '../wallet/wallet.module';
 import { BankAccountsService } from './bank-accounts.service';
+import { CampusPayoutsController } from './campus-payouts.controller';
 import {
   PAYOUTS_PROVIDER_ADAPTER,
   SandboxPayoutAdapter,
@@ -27,6 +28,9 @@ import { PayoutsService } from './payouts.service';
  * All money movement goes through WalletService inside the caller's
  * transaction; the provider adapter is called by the processor only, outside
  * any transaction or row lock.
+ *
+ * CampusPayoutsController adds the read-only campus monitoring route
+ * (campus.payouts.read) from REQUIREMENTS 3.8.7; it never mutates a payout.
  */
 @Module({
   imports: [
@@ -38,7 +42,7 @@ import { PayoutsService } from './payouts.service';
     WalletModule,
     SettlementsModule,
   ],
-  controllers: [PayoutsController],
+  controllers: [PayoutsController, CampusPayoutsController],
   providers: [
     PayoutsService,
     BankAccountsService,

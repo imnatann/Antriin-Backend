@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { Injectable, ServiceUnavailableException } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { ACCOUNT_NUMBER_PATTERN } from './bank-account.crypto';
 
@@ -108,14 +108,21 @@ export class SandboxPayoutAdapter implements PayoutProviderAdapter {
     };
   }
 
+  /**
+   * A disabled mode (or production, which is always disabled) is DETERMINISTIC:
+   * retrying the same submission can never succeed. It is therefore a permanent
+   * failure, not a transient one - the processor fails the payout and releases
+   * the hold back to the tenant payable balance instead of burning five
+   * attempts and leaving the money held for manual reconciliation (review F3).
+   */
   private assertSandbox(): void {
     if (
       this.config.getOrThrow<string>('NODE_ENV') === 'production' ||
       this.config.get<string>('PAYOUTS_PROVIDER_MODE') !== 'sandbox'
     )
-      throw new ServiceUnavailableException({
-        code: 'PAYOUT_PROVIDER_DISABLED',
-        message: 'Sandbox payouts are not available in this mode',
-      });
+      throw new PermanentPayoutRequestError(
+        'PAYOUT_PROVIDER_DISABLED',
+        'Sandbox payouts are not available in this mode',
+      );
   }
 }

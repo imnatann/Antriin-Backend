@@ -292,11 +292,25 @@ export class PayoutsController {
     description: '8-200 characters: A-Z a-z 0-9 . _ :',
   })
   @ApiCreatedResponse({
-    description: 'Payout requested; funds held until the provider resolves',
+    description:
+      'Payout requested (or replayed for the same Idempotency-Key); funds held until the provider resolves',
     schema: {
       type: 'object',
-      properties: { data: payoutSchema },
-      required: ['data'],
+      properties: {
+        data: payoutSchema,
+        meta: {
+          type: 'object',
+          properties: {
+            replayed: {
+              type: 'boolean',
+              description:
+                'true when this request replayed an existing payout instead of creating one',
+            },
+          },
+          required: ['replayed'],
+        },
+      },
+      required: ['data', 'meta'],
     },
   })
   @ApiBadRequestResponse({
@@ -341,7 +355,9 @@ export class PayoutsController {
         idempotencyKey,
       },
     );
-    return { data: result.payout };
+    // F7: a replayed Idempotency-Key must be distinguishable from a brand-new
+    // request (no second hold happened), so the flag travels in the envelope.
+    return { data: result.payout, meta: { replayed: result.replayed } };
   }
 
   @Get('payouts')

@@ -392,6 +392,109 @@ describe(
       );
     });
 
+    it('authorizes before touching crypto material (F8)', async () => {
+      const env = await createEnv(pool);
+      // A service whose encryption key is missing AND whose caller is not a
+      // member: the 403 must win over both the 400 (bad input) and the 503
+      // (missing key), because authorization is a server-side decision and the
+      // crypto path must never run for an unauthorized caller.
+      const keyless = new BankAccountsService(
+        db,
+        access,
+        audit,
+        makeConfig({ AUTH_ENCRYPTION_KEY: undefined }),
+      );
+      await assert.rejects(
+        keyless.createBankAccount(env.outsiderId, env.tenantId, {
+          bankCode: 'BCA',
+          accountNumber: uniqueNumber(),
+          accountHolderName: 'Owner Name',
+        }),
+        /Tenant access denied/,
+      );
+      await assert.rejects(
+        keyless.createBankAccount(env.outsiderId, env.tenantId, {
+          bankCode: 'NOT_A_BANK',
+          accountNumber: 'x',
+          accountHolderName: '',
+        }),
+        /Tenant access denied/,
+        'invalid input from a non-member is still a 403',
+      );
+      const existing = await accounts.createBankAccount(
+        env.ownerId,
+        env.tenantId,
+        {
+          bankCode: 'BCA',
+          accountNumber: uniqueNumber(),
+          accountHolderName: 'Owner Name',
+        },
+      );
+      await assert.rejects(
+        keyless.replaceBankAccount(env.outsiderId, env.tenantId, existing.id, {
+          bankCode: 'BCA',
+          accountNumber: uniqueNumber(),
+          accountHolderName: 'Owner Name',
+        }),
+        /Tenant access denied/,
+      );
+      // Nothing was written by any of the rejected calls.
+      assert.equal(
+        (
+          await pool.query('select 1 from bank_accounts where tenant_id = $1', [
+            env.tenantId,
+          ])
+        ).rowCount,
+        1,
+      );
+    });
+
+    it('refuses to verify a disabled account (F8)', async () => {
+      const env = await createEnv(pool);
+      const view = await accounts.createBankAccount(env.ownerId, env.tenantId, {
+        bankCode: 'BCA',
+        accountNumber: uniqueNumber(),
+        accountHolderName: 'Owner Name',
+      });
+      await accounts.disableBankAccount(env.ownerId, env.tenantId, view.id);
+      const client = await pool.connect();
+      try {
+        await client.query('begin');
+        await assert.rejects(
+          accounts.markVerified(client, env.tenantId, view.id, {
+            verifiedByUserId: env.ownerId,
+            method: 'manual_campus',
+          }),
+          (error: unknown) => httpCode(error) === 'BANK_ACCOUNT_NOT_ACTIVE',
+        );
+        await client.query('rollback');
+      } finally {
+        client.release();
+      }
+      // Verification status and account status stay consistent.
+      const row = await pool.query<{
+        verification_status: string;
+        status: string;
+        verified_at: string | null;
+      }>(
+        'select verification_status, status, verified_at from bank_accounts where id = $1',
+        [view.id],
+      );
+      assert.equal(row.rows[0].status, 'disabled');
+      assert.equal(row.rows[0].verification_status, 'pending');
+      assert.equal(row.rows[0].verified_at, null);
+      assert.equal(
+        (
+          await pool.query(
+            "select 1 from audit_events where action = 'tenant.bank_account.verified' and target_id = $1",
+            [view.id],
+          )
+        ).rowCount,
+        0,
+        'a rejected verification writes no audit row',
+      );
+    });
+
     it('verifies only through the controlled service path and audits it', async () => {
       const env = await createEnv(pool);
       const view = await accounts.createBankAccount(env.ownerId, env.tenantId, {

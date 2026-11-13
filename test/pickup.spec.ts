@@ -16,9 +16,17 @@ import { AccessService } from '../src/modules/access/access.service';
 import { AuditService } from '../src/modules/audit/audit.service';
 import { AvailabilityService } from '../src/modules/availability/availability.service';
 import { CatalogService } from '../src/modules/catalog/catalog.service';
+import { CasesService } from '../src/modules/cases/cases.service';
 import { OutboxService } from '../src/modules/notifications/outbox.service';
 import { OrdersService } from '../src/modules/orders/orders.service';
 import { PickupService } from '../src/modules/pickup/pickup.service';
+import { SandboxRefundAdapter } from '../src/modules/refunds/refund.adapter';
+import { RefundsService } from '../src/modules/refunds/refunds.service';
+import { SettlementsService } from '../src/modules/settlements/settlements.service';
+import {
+  ORDER_PAYMENT_ESCROW_ACCOUNT,
+  TENANT_PAYABLE_SYSTEM_KEY_PREFIX,
+} from '../src/modules/settlements/settlements.constants';
 import { TenantOperatingHoursService } from '../src/modules/tenants/tenant-operating-hours.service';
 import { WalletService } from '../src/modules/wallet/wallet.service';
 
@@ -45,7 +53,12 @@ interface Fixture {
 let orders: OrdersService;
 let wallet: WalletService;
 let pickup: PickupService;
+let settlements: SettlementsService;
 let pool: Pool;
+let database: DatabaseService;
+let access: AccessService;
+let audit: AuditService;
+let configService: ConfigService;
 
 const MICROSECOND_UTC = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z$/;
 const DISPLAY_CODE = /^[2-9A-HJ-KM-NP-TV-Z]{4}-[2-9A-HJ-KM-NP-TV-Z]{4}$/;
@@ -81,9 +94,9 @@ describe(
     before(async () => {
       pool = new Pool({ connectionString: testDatabaseUrl, max: 20 });
       await pool.query('select 1');
-      const database = { pool } as unknown as DatabaseService;
-      const access = new AccessService(database);
-      const audit = new AuditService(database, access);
+      database = { pool } as unknown as DatabaseService;
+      access = new AccessService(database);
+      audit = new AuditService(database, access);
       const operatingHours = new TenantOperatingHoursService(
         database,
         access,
@@ -99,6 +112,10 @@ describe(
       wallet = new WalletService(database);
       const outbox = new OutboxService(database);
       const config: Record<string, string | number> = {
+        NODE_ENV: 'test',
+        REFUNDS_PROVIDER_MODE: 'sandbox',
+        PAYMENTS_PROVIDER_MODE: 'disabled',
+        PAYOUTS_PROVIDER_MODE: 'disabled',
         ORDER_PROPOSAL_TTL_SECONDS: 600,
         // A wide preparation lead so the deterministic fixture slot (tomorrow
         // 10:00 Asia/Jakarta, always inside operating hours) is eligible for
@@ -111,9 +128,13 @@ describe(
         AUTH_ENCRYPTION_KEY: randomBytes(32).toString('base64'),
         PICKUP_CREDENTIAL_TTL_SECONDS: TEST_TTL_SECONDS,
       };
-      const configService = {
+      configService = {
         get: (key: string, fallback?: unknown) =>
           key in config ? config[key] : fallback,
+        getOrThrow: (key: string) => {
+          if (!(key in config)) throw new Error('missing config ' + key);
+          return config[key];
+        },
       } as unknown as ConfigService;
       orders = new OrdersService(
         database,
@@ -125,12 +146,36 @@ describe(
         outbox,
         configService,
       );
+      // Review F2: the handover hook is the ONLY trigger that moves an order's
+      // money from escrow to the tenant payable balance (D18 Q2a). PickupService
+      // now REQUIRES SettlementsService, so the suite wires the real stack
+      // instead of leaving the hook silently disabled.
+      const refunds = new RefundsService(
+        database,
+        wallet,
+        audit,
+        outbox,
+        access,
+        orders,
+        configService,
+        new SandboxRefundAdapter(configService),
+      );
+      const cases = new CasesService(database, access, audit, outbox, refunds);
+      settlements = new SettlementsService(
+        database,
+        access,
+        audit,
+        wallet,
+        orders,
+        cases,
+      );
       pickup = new PickupService(
         database,
         access,
         orders,
         audit,
         configService,
+        settlements,
       );
     });
 
@@ -369,6 +414,208 @@ describe(
         [order.id],
       );
       assert.ok(audits.rows.some((row) => row.action === 'order.completed'));
+    });
+
+    it('releases the order payable on handover: settlement row + balanced escrow->payable leg (F2)', async () => {
+      const fx = await createFixture();
+      const { order, slot } = await makeReadyOrder(fx);
+      const issued = await pickup.issueCredential(
+        fx.pickupStaffId,
+        fx.tenantId,
+        order.id,
+      );
+      const total = String(ITEM_PRICE_MINOR);
+
+      const result = await pickup.handover(
+        fx.pickupStaffId,
+        fx.tenantId,
+        issued.data.code,
+      );
+      assert.equal(result.data.status, 'completed');
+
+      // D18 Q2a: the handover itself creates exactly ONE settlement row, born
+      // 'available' inside the same transaction.
+      const settlementsOfOrder = await pool.query<{
+        id: string;
+        status: string;
+        amount_minor: string;
+        release_ledger_transaction_id: string;
+        released_at: string | null;
+      }>(
+        `select id::text, status, amount_minor::text,
+                release_ledger_transaction_id::text, released_at
+           from settlements where order_id = $1`,
+        [order.id],
+      );
+      assert.equal(settlementsOfOrder.rowCount, 1);
+      const settlement = settlementsOfOrder.rows[0];
+      assert.equal(settlement.status, 'available');
+      assert.equal(settlement.amount_minor, total);
+      assert.ok(settlement.released_at, 'available requires released_at');
+      assert.ok(settlement.release_ledger_transaction_id);
+
+      // The release leg is ONE balanced transfer: escrow debit == payable credit
+      // == the order total. Asserted on the release transaction itself, not on
+      // the shared escrow balance (which other orders also move).
+      const entries = await pool.query<{
+        direction: string;
+        amount_minor: string;
+        system_key: string;
+      }>(
+        `select e.direction, e.amount_minor::text, a.system_key
+           from ledger_entries e
+           join wallet_accounts a on a.id = e.account_id
+          where e.transaction_id = $1
+          order by e.direction`,
+        [settlement.release_ledger_transaction_id],
+      );
+      assert.equal(entries.rowCount, 2, 'a transfer has exactly two legs');
+      const debit = entries.rows.find((row) => row.direction === 'debit');
+      const credit = entries.rows.find((row) => row.direction === 'credit');
+      assert.equal(debit?.system_key, ORDER_PAYMENT_ESCROW_ACCOUNT);
+      assert.equal(debit?.amount_minor, total);
+      assert.equal(
+        credit?.system_key,
+        TENANT_PAYABLE_SYSTEM_KEY_PREFIX + fx.tenantId,
+      );
+      assert.equal(credit?.amount_minor, total);
+
+      const payable = await pool.query<{ balance_minor: string }>(
+        `select balance_minor::text from wallet_accounts
+          where account_type = 'system' and system_key = $1 and currency = 'IDR'`,
+        [TENANT_PAYABLE_SYSTEM_KEY_PREFIX + fx.tenantId],
+      );
+      assert.equal(payable.rows[0].balance_minor, total);
+
+      // The business handover is unchanged by the extra hook.
+      assert.equal(
+        (
+          await pool.query<{ status: string }>(
+            'select status from orders where id = $1',
+            [order.id],
+          )
+        ).rows[0].status,
+        'completed',
+      );
+      assert.ok(
+        (
+          await pool.query<{ consumed_at: string | null }>(
+            'select consumed_at from pickup_credentials where id = $1',
+            [issued.data.credentialId],
+          )
+        ).rows[0].consumed_at,
+      );
+      assert.equal(
+        (
+          await pool.query<{ status: string }>(
+            'select status from slot_reservations where order_id = $1',
+            [order.id],
+          )
+        ).rows[0].status,
+        'consumed',
+      );
+      assert.equal(
+        (
+          await pool.query<{ reserved_count: number }>(
+            'select reserved_count from pickup_slots where id = $1',
+            [slot.id],
+          )
+        ).rows[0].reserved_count,
+        1,
+      );
+      assert.equal(
+        (
+          await pool.query(
+            "select 1 from audit_events where action = 'tenant.payable.released' and target_id = $1",
+            [settlement.id],
+          )
+        ).rowCount,
+        1,
+      );
+    });
+
+    it('keeps the handover successful when the settlement release throws (F2 containment)', async () => {
+      const fx = await createFixture();
+      const { order } = await makeReadyOrder(fx);
+      const issued = await pickup.issueCredential(
+        fx.pickupStaffId,
+        fx.tenantId,
+        order.id,
+      );
+      // A settlements slice that explodes on the hook: the business handover
+      // must still commit, with no settlement and the money left in escrow.
+      const failing = new PickupService(
+        database,
+        access,
+        orders,
+        audit,
+        configService,
+        {
+          releaseAfterHandover: async () => {
+            throw new Error('settlement release exploded');
+          },
+        } as unknown as SettlementsService,
+      );
+
+      const result = await failing.handover(
+        fx.pickupStaffId,
+        fx.tenantId,
+        issued.data.code,
+      );
+      assert.equal(result.data.status, 'completed');
+      assert.equal(
+        (
+          await pool.query<{ status: string }>(
+            'select status from orders where id = $1',
+            [order.id],
+          )
+        ).rows[0].status,
+        'completed',
+      );
+      assert.equal(
+        (
+          await pool.query(
+            'select 1 from order_handovers where order_id = $1',
+            [order.id],
+          )
+        ).rowCount,
+        1,
+        'the handover row must still exist',
+      );
+      assert.equal(
+        (
+          await pool.query('select 1 from settlements where order_id = $1', [
+            order.id,
+          ])
+        ).rowCount,
+        0,
+        'no settlement may be written when the release failed',
+      );
+      const payable = await pool.query<{ balance_minor: string }>(
+        `select balance_minor::text from wallet_accounts
+          where account_type = 'system' and system_key = $1 and currency = 'IDR'`,
+        [TENANT_PAYABLE_SYSTEM_KEY_PREFIX + fx.tenantId],
+      );
+      assert.equal(payable.rows[0]?.balance_minor ?? '0', '0');
+
+      // The release stays retryable (idempotent, order already completed).
+      const client = await pool.connect();
+      try {
+        await client.query('begin');
+        const outcome = await settlements.releaseForOrder(
+          client,
+          fx.tenantId,
+          order.id,
+          { type: 'user', id: fx.pickupStaffId },
+        );
+        await client.query('commit');
+        assert.equal(outcome.released, true);
+      } catch (error) {
+        await client.query('rollback').catch(() => undefined);
+        throw error;
+      } finally {
+        client.release();
+      }
     });
 
     it('replays a finished handover as a consistent 409 with no second effect', async () => {

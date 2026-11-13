@@ -140,16 +140,18 @@ export class BankAccountsService {
   ): Promise<BankAccountView> {
     this.assertUuid(actorUserId, 'user id');
     this.assertUuid(tenantId, 'tenant id');
-    const details = this.normalizeInput(input);
-    const keys = bankAccountKeys(this.config);
 
     return this.withTransaction(undefined, async (tx) => {
+      // F8: authorization runs BEFORE normalization/encryption so a non-member
+      // receives 403 instead of a validation error (400) or a key error (503).
       await this.access.requireTenant(
         actorUserId,
         tenantId,
         'tenant.bank_account.manage',
         tx,
       );
+      const details = this.normalizeInput(input);
+      const keys = bankAccountKeys(this.config);
       const existingDefault = await tx.query<{ id: string }>(
         `select id::text from bank_accounts
           where tenant_id = $1 and status = 'active' and is_default`,
@@ -198,16 +200,17 @@ export class BankAccountsService {
     this.assertUuid(actorUserId, 'user id');
     this.assertUuid(tenantId, 'tenant id');
     this.assertUuid(accountId, 'bank account id');
-    const details = this.normalizeInput(input);
-    const keys = bankAccountKeys(this.config);
 
     return this.withTransaction(undefined, async (tx) => {
+      // F8: same rule as create - authorize first, then touch crypto material.
       await this.access.requireTenant(
         actorUserId,
         tenantId,
         'tenant.bank_account.manage',
         tx,
       );
+      const details = this.normalizeInput(input);
+      const keys = bankAccountKeys(this.config);
       const previous = await tx.query<{
         id: string;
         is_default: boolean;
@@ -336,6 +339,11 @@ export class BankAccountsService {
    * exposed over HTTP: an operator/test harness calls it inside an explicit
    * transaction. It records who verified the account, by which method, and
    * writes the immutable audit row.
+   *
+   * F8: only an ACTIVE account may become verified. Verifying a disabled row
+   * would leave verification status and account status contradicting each
+   * other (and could make a payout target look proven while it is off), so a
+   * disabled account is a stable 409 BANK_ACCOUNT_NOT_ACTIVE.
    */
   async markVerified(
     client: PoolClient,
@@ -346,13 +354,21 @@ export class BankAccountsService {
     this.assertUuid(tenantId, 'tenant id');
     this.assertUuid(accountId, 'bank account id');
     this.assertUuid(input.verifiedByUserId, 'verifier id');
-    const locked = await client.query<{ verification_status: string }>(
-      `select verification_status from bank_accounts
+    const locked = await client.query<{
+      verification_status: string;
+      status: string;
+    }>(
+      `select verification_status, status from bank_accounts
         where id = $1 and tenant_id = $2 for update`,
       [accountId, tenantId],
     );
     const row = locked.rows[0];
     if (!row) throw new NotFoundException('Bank account was not found');
+    if (row.status !== 'active')
+      throw new ConflictException({
+        code: BANK_ACCOUNT_ERROR_CODES.notActive,
+        message: 'Only an active bank account can be verified',
+      });
     if (row.verification_status !== 'verified') {
       await client.query(
         `update bank_accounts

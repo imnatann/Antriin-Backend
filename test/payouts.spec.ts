@@ -466,6 +466,13 @@ describe(
         (error: unknown) =>
           httpCode(error) === 'PAYOUT_BANK_ACCOUNT_UNVERIFIED',
       );
+      // F4: payouts.bank_account_id is a single-column FK, so the service owns
+      // the tenant boundary. Another tenant's verified account is a 404 and
+      // leaves no payout, no hold and no provider request behind.
+      const payableBefore = await balanceOf(
+        pool,
+        TENANT_PAYABLE_SYSTEM_KEY_PREFIX + env.tenantId,
+      );
       await assert.rejects(
         stack.payouts.requestPayout(env.ownerId, env.tenantId, {
           bankAccountId: foreign,
@@ -473,6 +480,30 @@ describe(
           idempotencyKey: 'foreign-account-1',
         }),
         /Bank account was not found/,
+      );
+      assert.equal(
+        (
+          await pool.query('select 1 from payouts where tenant_id = $1', [
+            env.tenantId,
+          ])
+        ).rowCount,
+        0,
+        'a cross-tenant account must not create a payout',
+      );
+      assert.equal(
+        await balanceOf(pool, TENANT_PAYABLE_SYSTEM_KEY_PREFIX + env.tenantId),
+        payableBefore,
+        'a rejected destination must not move money',
+      );
+      // The other tenant's own owner cannot be tricked either: the account is
+      // still only usable by its owner (the lookup is tenant-scoped in SQL).
+      await assert.rejects(
+        stack.payouts.requestPayout(other.ownerId, env.tenantId, {
+          bankAccountId: foreign,
+          amountMinor: '10000',
+          idempotencyKey: 'foreign-account-2',
+        }),
+        /Tenant access denied/,
       );
       await assert.rejects(
         stack.payouts.requestPayout(env.kitchenId, env.tenantId, {
@@ -838,6 +869,116 @@ describe(
       );
     });
 
+    it('fails a payout permanently when the provider mode is disabled: one attempt, hold released (F3)', async () => {
+      const env = await createEnv(pool);
+      await fundPayable(pool, stack, env, ['50000']);
+      const accountId = await createVerifiedAccount(pool, stack, env);
+      const requested = await stack.payouts.requestPayout(
+        env.ownerId,
+        env.tenantId,
+        {
+          bankAccountId: accountId,
+          amountMinor: '20000',
+          idempotencyKey: 'disabled-mode-1',
+        },
+      );
+      // The operator disables the mode while the payout is still queued. The
+      // sandbox adapter refuses DETERMINISTICALLY, so retrying is pointless.
+      const disabledConfig = makeConfig({ PAYOUTS_PROVIDER_MODE: 'disabled' });
+      const disabled = payoutsWith(
+        stack,
+        new SandboxPayoutAdapter(disabledConfig),
+        { PAYOUTS_PROVIDER_MODE: 'disabled' },
+      );
+      const processed = await disabled.processPayoutRequest(
+        requested.payout.id,
+      );
+      assert.equal(
+        processed.outcome,
+        'failed',
+        'a deterministic provider refusal must not be retried',
+      );
+
+      const payout = await pool.query<{
+        status: string;
+        release_ledger_transaction_id: string | null;
+        settle_ledger_transaction_id: string | null;
+        failure_code: string | null;
+        failed_at: string | null;
+      }>(
+        `select status, release_ledger_transaction_id::text,
+                settle_ledger_transaction_id::text, failure_code, failed_at
+           from payouts where id = $1`,
+        [requested.payout.id],
+      );
+      assert.equal(payout.rows[0].status, 'failed');
+      assert.notEqual(payout.rows[0].status, 'processing');
+      assert.ok(payout.rows[0].failed_at);
+      assert.ok(payout.rows[0].release_ledger_transaction_id);
+      assert.equal(payout.rows[0].settle_ledger_transaction_id, null);
+      assert.equal(payout.rows[0].failure_code, 'PAYOUT_PROVIDER_DISABLED');
+
+      // The hold went back to payable, so the money is NOT stuck and the next
+      // payout request is not blocked by payouts_one_active_per_tenant_uq.
+      assert.equal(
+        await balanceOf(
+          pool,
+          TENANT_PAYOUT_HOLD_SYSTEM_KEY_PREFIX + env.tenantId,
+        ),
+        '0',
+      );
+      assert.equal(
+        await balanceOf(pool, TENANT_PAYABLE_SYSTEM_KEY_PREFIX + env.tenantId),
+        '50000',
+      );
+      const attempts = await pool.query<{
+        attempt_no: number;
+        status: string;
+      }>(
+        'select attempt_no, status from payout_attempts where payout_id = $1 order by attempt_no',
+        [requested.payout.id],
+      );
+      assert.equal(attempts.rowCount, 1, 'exactly one provider attempt');
+      assert.equal(attempts.rows[0].status, 'failed');
+      const outbox = await pool.query<{ status: string }>(
+        'select status from payout_request_outbox where payout_id = $1',
+        [requested.payout.id],
+      );
+      assert.equal(outbox.rows[0].status, 'done');
+      assert.equal(
+        (
+          await pool.query(
+            "select 1 from audit_events where action = 'tenant.payout.failed' and target_id = $1",
+            [requested.payout.id],
+          )
+        ).rowCount,
+        1,
+      );
+      assert.equal(
+        (
+          await pool.query(
+            "select 1 from audit_events where action = 'tenant.payout.needs_assistance' and target_id = $1",
+            [requested.payout.id],
+          )
+        ).rowCount,
+        0,
+        'a deterministic refusal is not an ambiguous outcome',
+      );
+
+      // A new payout can be requested immediately afterwards.
+      const next = await stack.payouts.requestPayout(
+        env.ownerId,
+        env.tenantId,
+        {
+          bankAccountId: accountId,
+          amountMinor: '20000',
+          idempotencyKey: 'disabled-mode-2',
+        },
+      );
+      assert.equal(next.payout.status, 'requested');
+      assert.equal(next.replayed, false);
+    });
+
     it('keeps funds held and stops retrying on an ambiguous provider outcome', async () => {
       const env = await createEnv(pool);
       await fundPayable(pool, stack, env, ['50000']);
@@ -1150,6 +1291,112 @@ describe(
         detail.payout.accountNumberMasked,
         before.accountNumberMasked,
         'a later account change must not retarget an existing payout',
+      );
+    });
+
+    it('lets a campus manager monitor payouts of its tenants only, always masked (F9)', async () => {
+      const env = await createEnv(pool);
+      await fundPayable(pool, stack, env, ['50000']);
+      const accountId = await createVerifiedAccount(pool, stack, env);
+      const requested = await stack.payouts.requestPayout(
+        env.ownerId,
+        env.tenantId,
+        {
+          bankAccountId: accountId,
+          amountMinor: '20000',
+          idempotencyKey: 'campus-monitor-1',
+        },
+      );
+      const mkUser = async (name: string) =>
+        (
+          await pool.query<{ id: string }>(
+            'insert into users (display_name) values ($1) returning id',
+            [name + ' ' + randomUUID()],
+          )
+        ).rows[0].id;
+      const campusAdminId = await mkUser('CampusAdmin');
+      const campusReaderId = await mkUser('CampusReader');
+      const otherCampusAdminId = await mkUser('OtherCampusAdmin');
+      await pool.query(
+        "insert into campus_memberships (campus_id, user_id, permissions, status) values ($1, $2, $3::text[], 'active')",
+        [env.campusId, campusAdminId, ['campus.payouts.read']],
+      );
+      await pool.query(
+        "insert into campus_memberships (campus_id, user_id, permissions, status) values ($1, $2, $3::text[], 'active')",
+        [env.campusId, campusReaderId, ['campus.transactions.read']],
+      );
+      const otherCampusId = (
+        await pool.query<{ id: string }>(
+          'insert into campuses (name) values ($1) returning id',
+          ['Other campus ' + randomUUID()],
+        )
+      ).rows[0].id;
+      await pool.query(
+        "insert into campus_memberships (campus_id, user_id, permissions, status) values ($1, $2, $3::text[], 'active')",
+        [otherCampusId, otherCampusAdminId, ['campus.payouts.read']],
+      );
+
+      const page = await stack.payouts.listCampusPayouts(
+        campusAdminId,
+        env.campusId,
+        { limit: 100 },
+      );
+      const row = page.items.find(
+        (item) => item.payoutId === requested.payout.id,
+      );
+      assert.ok(row, 'the campus manager must see the payout of its tenant');
+      assert.equal(row.tenantId, env.tenantId);
+      assert.equal(row.status, 'requested');
+      assert.equal(row.amountMinor, '20000');
+      assert.equal(row.currency, 'IDR');
+      assert.equal(
+        row.accountNumberMasked,
+        '****' + requested.payout.accountNumberMasked.slice(-4),
+      );
+      // D7: response timestamps are the DB microsecond UTC strings.
+      assert.match(
+        row.requestedAt,
+        /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z$/,
+      );
+      // Monitoring never exposes a destination or a mutation path.
+      const serialized = JSON.stringify(page);
+      assert.ok(!serialized.includes('accountNumberCiphertext'));
+      assert.ok(!serialized.includes('ciphertext'));
+
+      // A campus member without campus.payouts.read is rejected.
+      await assert.rejects(
+        stack.payouts.listCampusPayouts(campusReaderId, env.campusId),
+        /Campus permission denied/,
+      );
+      // A manager of another campus cannot read this campus at all.
+      await assert.rejects(
+        stack.payouts.listCampusPayouts(otherCampusAdminId, env.campusId),
+        /Campus access denied/,
+      );
+      // A tenant owner has no campus permission either.
+      await assert.rejects(
+        stack.payouts.listCampusPayouts(env.ownerId, env.campusId),
+        /Campus access denied/,
+      );
+      // And the campus scope really filters: the other campus sees nothing.
+      const empty = await stack.payouts.listCampusPayouts(
+        otherCampusAdminId,
+        otherCampusId,
+        { limit: 100 },
+      );
+      assert.deepEqual(empty.items, []);
+      // Status filter and invalid filters.
+      const filtered = await stack.payouts.listCampusPayouts(
+        campusAdminId,
+        env.campusId,
+        { status: 'succeeded', limit: 100 },
+      );
+      assert.ok(filtered.items.every((item) => item.status === 'succeeded'));
+      await assert.rejects(
+        stack.payouts.listCampusPayouts(campusAdminId, env.campusId, {
+          status: 'unknown',
+        }),
+        /Invalid payout status filter/,
       );
     });
 
