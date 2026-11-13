@@ -36,6 +36,22 @@ Laporan review independen tersimpan di [reviews/](reviews/): `schema-wave1.md` (
 
 Belum selesai: refunds/cases (sedang dikerjakan), settlement/payout, review/risk/reporting, profil `/me`, dan dispatcher OTP eksternal. Semua provider eksternal tetap sandbox/stub; tidak ada uang nyata, deployment, atau migrasi produksi yang diklaim.
 
+## Status implementasi 13 November 2026 (lanjutan sesi orkestrasi DSH)
+
+Setelah review independen dan perbaikan, seluruh slice wave 1, wave 2a, pickup, refunds dan cases sudah terintegrasi. Bukti terakhir: `npm run test:integration` menerapkan migrasi `0000..0008` pada PostgreSQL baru dan menjalankan **281/281 tes** dengan Redis/BullMQ nyata, tanpa skip; typecheck, lint, format dan build lulus.
+
+| Slice                                                      | Commit    | Bukti                          |
+| ---------------------------------------------------------- | --------- | ------------------------------ |
+| Refunds (keputusan kampus, kredit tepat sekali)            | `d49a806` | 14 tes PostgreSQL              |
+| Perbaikan review pickup (rate limit, test HTTP/konkurensi) | `dee2893` | 16 PG + 7 HTTP + 7 interceptor |
+| Cases (keputusan kampus, refund pending)                   | `5e0bf87` | 17 tes PostgreSQL              |
+
+Laporan review independen di [reviews/](reviews/): `schema-wave1.md`, `schema-0007.md`, `wave1-catalog-availability.md`, `wave1-payments-tenant.md`, `wave1-pickup.md`, dan `wave1-refunds-cases.md`. Keputusan lintas slice mengikat ada di [reviews/wave1-decisions.md](reviews/wave1-decisions.md) D1–D17.
+
+Catatan proses: sesi ini memakai harness DSH dengan model subagent `inferhub/deepseek-v4.1-flash` (bukan GPT-6 Luna seperti tertulis pada checkpoint sebelumnya); aturan ORCHESTRATION lain tetap dipatuhi.
+
+Belum selesai: settlement/payout/rekening (desain sedang disusun), review/risk/reporting, profil `/me`, dispatcher OTP eksternal, dan job operasional (pembersih idempotency/outbox). Tidak ada provider nyata, deployment, atau migrasi produksi yang diklaim.
+
 ## Paket kerja dan Jira
 
 | Paket                                  | Tiket backend                                                                                                                                  | Status implementasi                                                                    |
