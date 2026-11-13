@@ -1,13 +1,16 @@
 import {
   Body,
   Controller,
+  Header,
   HttpCode,
   Param,
   ParseUUIDPipe,
   Post,
   UseGuards,
+  UseInterceptors,
 } from '@nestjs/common';
 import {
+  ApiBadRequestResponse,
   ApiBearerAuth,
   ApiConflictResponse,
   ApiCreatedResponse,
@@ -16,13 +19,15 @@ import {
   ApiNotFoundResponse,
   ApiOkResponse,
   ApiOperation,
+  ApiServiceUnavailableResponse,
   ApiTags,
+  ApiTooManyRequestsResponse,
   ApiUnauthorizedResponse,
 } from '@nestjs/swagger';
 import { AuthGuard, CurrentUser } from '../auth/auth.guard';
 import type { AuthenticatedPrincipal } from '../auth/auth.guard';
 import { PickupCodeDto, RevokePickupCredentialDto } from './dto/pickup.dto';
-import { PickupRateLimitGuard } from './pickup-rate-limit.guard';
+import { PickupRateLimitInterceptor } from './pickup-rate-limit.interceptor';
 import {
   issuedPickupCredentialSchema,
   pickupHandoverSchema,
@@ -35,7 +40,8 @@ import { PickupService } from './pickup.service';
  * Staff pickup operations, all gated by tenant.orders.handover (D16.2) which
  * the service enforces with AccessService.requireTenant inside the mutation
  * transaction. Code-presentation endpoints (verification + handover) carry an
- * extra per-IP Redis rate limit against brute force.
+ * extra rate limit against brute force: only FAILED code attempts count, in a
+ * per (IP, tenant, actor) Redis bucket (R3-01), fail-closed when Redis is down.
  */
 @ApiTags('Pickup')
 @ApiBearerAuth()
@@ -46,6 +52,8 @@ export class TenantPickupController {
 
   @Post('orders/:orderId/pickup-credential')
   @HttpCode(201)
+  // R3-08: the response carries the plaintext code - never cache it.
+  @Header('Cache-Control', 'no-store')
   @ApiOperation({
     summary:
       'Issue (or rotate) the pickup code of a ready_for_pickup order; the plaintext code is returned here and re-displayable only to the owning buyer',
@@ -59,11 +67,17 @@ export class TenantPickupController {
       required: ['data'],
     },
   })
+  @ApiBadRequestResponse({ description: 'Malformed tenant/order id' })
   @ApiConflictResponse({
-    description: 'PICKUP_NOT_READY: the order is not ready_for_pickup',
+    description:
+      'PICKUP_NOT_READY: the order is not ready_for_pickup; PICKUP_CREDENTIAL_CONSUMED: the order credential was already used (R3-03)',
   })
   @ApiForbiddenResponse({ description: 'tenant.orders.handover is required' })
   @ApiNotFoundResponse({ description: 'Order not found for this tenant' })
+  @ApiServiceUnavailableResponse({
+    description:
+      'pickup_not_configured (AUTH_SECRET/AUTH_ENCRYPTION_KEY missing) or pickup_code_generation_failed',
+  })
   @ApiUnauthorizedResponse({ description: 'Bearer authentication is required' })
   issue(
     @CurrentUser() principal: AuthenticatedPrincipal,
@@ -86,6 +100,9 @@ export class TenantPickupController {
       properties: { data: revokedPickupCredentialSchema },
       required: ['data'],
     },
+  })
+  @ApiBadRequestResponse({
+    description: 'reason is required (1..500 chars), or malformed ids',
   })
   @ApiConflictResponse({
     description:
@@ -113,7 +130,7 @@ export class TenantPickupController {
 
   @Post('pickup/verification')
   @HttpCode(200)
-  @UseGuards(PickupRateLimitGuard)
+  @UseInterceptors(PickupRateLimitInterceptor)
   @ApiOperation({
     summary:
       'Verify a presented pickup code WITHOUT side effects (no event, no audit, no state change)',
@@ -126,14 +143,23 @@ export class TenantPickupController {
       required: ['data'],
     },
   })
+  @ApiBadRequestResponse({ description: 'Malformed code shape' })
   @ApiConflictResponse({
     description:
-      'PICKUP_CODE_INVALID (unknown code), PICKUP_CREDENTIAL_REVOKED or PICKUP_CREDENTIAL_CONSUMED',
+      'PICKUP_CODE_INVALID (unknown code), PICKUP_CREDENTIAL_REVOKED, PICKUP_CREDENTIAL_CONSUMED or PICKUP_ORDER_NOT_ELIGIBLE (terminal order state)',
   })
   @ApiForbiddenResponse({ description: 'tenant.orders.handover is required' })
   @ApiGoneResponse({ description: 'PICKUP_CREDENTIAL_EXPIRED' })
   @ApiNotFoundResponse({
     description: 'The code belongs to an order of another tenant',
+  })
+  @ApiTooManyRequestsResponse({
+    description:
+      'pickup_rate_limited after 10 FAILED code attempts per 300s window (IP, tenant, actor); body carries retryAfterSeconds and the retry-after header is set',
+  })
+  @ApiServiceUnavailableResponse({
+    description:
+      'pickup_rate_limit_unavailable (Redis down, fail-closed) or pickup_not_configured',
   })
   @ApiUnauthorizedResponse({ description: 'Bearer authentication is required' })
   verify(
@@ -146,7 +172,7 @@ export class TenantPickupController {
 
   @Post('pickup/handovers')
   @HttpCode(200)
-  @UseGuards(PickupRateLimitGuard)
+  @UseInterceptors(PickupRateLimitInterceptor)
   @ApiOperation({
     summary:
       'Hand over the order for a valid pickup code: completes the order via OrdersService, consumes reservation + credential and records order_handovers exactly once',
@@ -160,14 +186,23 @@ export class TenantPickupController {
       required: ['data'],
     },
   })
+  @ApiBadRequestResponse({ description: 'Malformed code shape' })
   @ApiConflictResponse({
     description:
-      'PICKUP_CODE_INVALID, PICKUP_CREDENTIAL_REVOKED, PICKUP_CREDENTIAL_CONSUMED (replay), ORDER_STATE_CONFLICT (not ready_for_pickup) or PICKUP_HANDOVER_CONFLICT (race)',
+      'PICKUP_CODE_INVALID, PICKUP_CREDENTIAL_REVOKED (incl. lost race vs rotation, R3-11), PICKUP_CREDENTIAL_CONSUMED (replay), PICKUP_ORDER_NOT_ELIGIBLE, ORDER_STATE_CONFLICT (not ready_for_pickup) or PICKUP_HANDOVER_CONFLICT (race)',
   })
   @ApiForbiddenResponse({ description: 'tenant.orders.handover is required' })
   @ApiGoneResponse({ description: 'PICKUP_CREDENTIAL_EXPIRED' })
   @ApiNotFoundResponse({
     description: 'The code belongs to an order of another tenant',
+  })
+  @ApiTooManyRequestsResponse({
+    description:
+      'pickup_rate_limited after 10 FAILED code attempts per 300s window (IP, tenant, actor); body carries retryAfterSeconds and the retry-after header is set',
+  })
+  @ApiServiceUnavailableResponse({
+    description:
+      'pickup_rate_limit_unavailable (Redis down, fail-closed) or pickup_not_configured',
   })
   @ApiUnauthorizedResponse({ description: 'Bearer authentication is required' })
   handover(

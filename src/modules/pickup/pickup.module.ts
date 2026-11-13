@@ -6,7 +6,7 @@ import { AuditModule } from '../audit/audit.module';
 import { AuthModule } from '../auth/auth.module';
 import { OrdersModule } from '../orders/orders.module';
 import { PickupController } from './pickup.controller';
-import { PickupRateLimitGuard } from './pickup-rate-limit.guard';
+import { PickupRateLimitInterceptor } from './pickup-rate-limit.interceptor';
 import { PickupService } from './pickup.service';
 import { TenantPickupController } from './tenant-pickup.controller';
 
@@ -16,8 +16,9 @@ import { TenantPickupController } from './tenant-pickup.controller';
  * order_handovers, plus order_events rows for the two credential event types);
  * order state changes go exclusively through the OrdersService contract
  * (D16.6). Authorization uses AccessService (tenant.orders.handover) and
- * AuditService for the immutable trail; the code-attempt rate limit reuses the
- * shared Redis with its own key namespace.
+ * AuditService for the immutable trail; the failed-code-attempt rate limit
+ * reuses the shared Redis with its own key namespace (R3-01: only failures
+ * count, keyed per IP+tenant+actor).
  */
 @Module({
   imports: [
@@ -29,7 +30,7 @@ import { TenantPickupController } from './tenant-pickup.controller';
     OrdersModule,
   ],
   controllers: [PickupController, TenantPickupController],
-  providers: [PickupService, PickupRateLimitGuard],
+  providers: [PickupService, PickupRateLimitInterceptor],
   exports: [PickupService],
 })
 export class PickupModule {}

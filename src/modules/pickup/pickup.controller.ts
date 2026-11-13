@@ -7,10 +7,12 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import {
+  ApiBadRequestResponse,
   ApiBearerAuth,
   ApiNotFoundResponse,
   ApiOkResponse,
   ApiOperation,
+  ApiServiceUnavailableResponse,
   ApiTags,
   ApiUnauthorizedResponse,
 } from '@nestjs/swagger';
@@ -44,9 +46,14 @@ export class PickupController {
       required: ['data'],
     },
   })
+  @ApiBadRequestResponse({ description: 'Malformed order id' })
   @ApiNotFoundResponse({
     description:
-      'Order not found for this buyer, or no active credential (not issued / revoked / consumed)',
+      'Order not found for this buyer, or no usable credential (not issued / revoked / consumed / expired / order in a terminal state - R3-04/R3-05)',
+  })
+  @ApiServiceUnavailableResponse({
+    description:
+      'pickup_not_configured or pickup_code_unavailable (ciphertext cannot be decrypted after key rotation; ask staff to re-issue)',
   })
   @ApiUnauthorizedResponse({ description: 'Bearer authentication is required' })
   getCredential(

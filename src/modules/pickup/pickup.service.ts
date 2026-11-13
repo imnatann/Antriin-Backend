@@ -92,6 +92,19 @@ interface CredentialLookupRow {
   expired: boolean;
 }
 
+/** PostgreSQL SQLSTATEs that mean "retry the transaction", not "bug". */
+function isConcurrencyFailure(error: unknown): boolean {
+  const code = (error as { code?: unknown } | null)?.code;
+  return code === '40P01' || code === '40001';
+}
+
+/** R3-04: statuses in which an order can never be picked up again. */
+function isTerminalOrderStatus(status: OrderStatus): boolean {
+  return (
+    status === 'cancelled' || status === 'declined' || status === 'completed'
+  );
+}
+
 const CREDENTIAL_LOOKUP_COLUMNS = `
        c.id AS credential_id,
        c.order_id,
@@ -158,6 +171,15 @@ export class PickupService {
       const order = locked.rows[0];
       if (!order) throw new NotFoundException('Order not found');
       if (order.status !== 'ready_for_pickup') {
+        // R3-04: a terminal order (cancelled/declined/completed) can never be
+        // issued again, so it gets the stable "not eligible" code instead of
+        // the "wait until ready" one.
+        if (isTerminalOrderStatus(order.status)) {
+          throw new ConflictException({
+            code: PICKUP_ERROR_CODES.orderNotEligible,
+            message: `Order is ${order.status}; pickup credentials can no longer be issued`,
+          });
+        }
         throw new ConflictException({
           code: PICKUP_ERROR_CODES.notReady,
           message: `Pickup credentials are issued for ready_for_pickup orders (current: ${order.status})`,
@@ -238,6 +260,33 @@ export class PickupService {
             pgError.constraint === 'pickup_credentials_code_hash_unique'
           ) {
             continue;
+          }
+          if (
+            pgError.code === '23505' &&
+            pgError.constraint === 'pickup_credentials_one_current_order_unique'
+          ) {
+            // R3-03: a consumed credential still occupies the partial-unique
+            // slot (revoked_at IS NULL). The ready_for_pickup status gate
+            // normally makes this unreachable; if a future path re-opens a
+            // completed order, fail with a stable domain 409 - never a 500.
+            const consumed = await client.query<{ id: string }>(
+              `SELECT id FROM pickup_credentials
+                WHERE order_id = $1 AND consumed_at IS NOT NULL
+                LIMIT 1`,
+              [orderId],
+            );
+            if (consumed.rows[0]) {
+              throw new ConflictException({
+                code: PICKUP_ERROR_CODES.credentialConsumed,
+                message:
+                  'The order credential was already consumed at handover and cannot be re-issued',
+              });
+            }
+            throw new ConflictException({
+              code: PICKUP_ERROR_CODES.handoverConflict,
+              message:
+                'An active pickup credential appeared concurrently; retry',
+            });
           }
           throw error;
         }
@@ -383,6 +432,10 @@ export class PickupService {
    * Side-effect-free verification of a presented code (staff). Read-only: no
    * event, no audit, no state change. Rejections mirror the handover flow so
    * what staff sees here is what handover will enforce.
+   *
+   * R3-07: the permission check and the read run inside ONE transaction and
+   * requireTenant receives the transaction client, so a membership revoked
+   * mid-flight cannot slip between check and read (FOR SHARE lock semantics).
    */
   async verifyCode(
     actorUserId: string,
@@ -393,57 +446,61 @@ export class PickupService {
     this.assertUuid(tenantId, 'tenant id');
     const security = this.securityConfig();
     const codeHash = this.hashCode(security.secret, this.normalizeCode(code));
-    await this.access.requireTenant(
-      actorUserId,
-      tenantId,
-      'tenant.orders.handover',
-    );
-    const result = await this.database.pool.query<
-      CredentialLookupRow & {
-        status: OrderStatus;
-        order_number: string | null;
-        total_minor: string;
-        currency: string;
-        pickup_starts_at: string;
-        pickup_ends_at: string;
-        credential_expires_at: string;
-        buyer_id: string;
-        buyer_display_name: string;
-      }
-    >(
-      `SELECT ${CREDENTIAL_LOOKUP_COLUMNS},
-              o.status,
-              o.order_number,
-              o.total_minor::text AS total_minor,
-              o.currency,
-              ${SQL_TS('o.pickup_starts_at')} AS pickup_starts_at,
-              ${SQL_TS('o.pickup_ends_at')} AS pickup_ends_at,
-              ${SQL_TS('c.expires_at')} AS credential_expires_at,
-              u.id AS buyer_id,
-              u.display_name AS buyer_display_name
-         FROM pickup_credentials c
-         JOIN orders o ON o.id = c.order_id
-         JOIN users u ON u.id = o.buyer_id
-        WHERE c.code_hash = $1`,
-      [codeHash],
-    );
-    const row = result.rows[0];
-    this.assertCredentialUsable(row, tenantId);
-    return {
-      data: {
-        orderId: row.order_id,
-        orderNumber: row.order_number,
-        status: row.status,
-        readyForHandover: row.status === 'ready_for_pickup',
-        buyer: { id: row.buyer_id, displayName: row.buyer_display_name },
-        totalMinor: row.total_minor,
-        currency: row.currency,
-        pickupStartsAt: row.pickup_starts_at,
-        pickupEndsAt: row.pickup_ends_at,
-        credentialId: row.credential_id,
-        credentialExpiresAt: row.credential_expires_at,
-      },
-    };
+    return this.withTransaction(async (client) => {
+      await this.access.requireTenant(
+        actorUserId,
+        tenantId,
+        'tenant.orders.handover',
+        client,
+      );
+      const result = await client.query<
+        CredentialLookupRow & {
+          status: OrderStatus;
+          order_number: string | null;
+          total_minor: string;
+          currency: string;
+          pickup_starts_at: string;
+          pickup_ends_at: string;
+          credential_expires_at: string;
+          buyer_id: string;
+          buyer_display_name: string;
+        }
+      >(
+        `SELECT ${CREDENTIAL_LOOKUP_COLUMNS},
+                o.status,
+                o.order_number,
+                o.total_minor::text AS total_minor,
+                o.currency,
+                ${SQL_TS('o.pickup_starts_at')} AS pickup_starts_at,
+                ${SQL_TS('o.pickup_ends_at')} AS pickup_ends_at,
+                ${SQL_TS('c.expires_at')} AS credential_expires_at,
+                u.id AS buyer_id,
+                u.display_name AS buyer_display_name
+           FROM pickup_credentials c
+           JOIN orders o ON o.id = c.order_id
+           JOIN users u ON u.id = o.buyer_id
+          WHERE c.code_hash = $1`,
+        [codeHash],
+      );
+      const row = result.rows[0];
+      this.assertCredentialUsable(row, tenantId);
+      this.assertOrderEligibleForPickup(row.status);
+      return {
+        data: {
+          orderId: row.order_id,
+          orderNumber: row.order_number,
+          status: row.status,
+          readyForHandover: row.status === 'ready_for_pickup',
+          buyer: { id: row.buyer_id, displayName: row.buyer_display_name },
+          totalMinor: row.total_minor,
+          currency: row.currency,
+          pickupStartsAt: row.pickup_starts_at,
+          pickupEndsAt: row.pickup_ends_at,
+          credentialId: row.credential_id,
+          credentialExpiresAt: row.credential_expires_at,
+        },
+      };
+    });
   }
 
   /**
@@ -465,7 +522,13 @@ export class PickupService {
     this.assertUuid(tenantId, 'tenant id');
     const security = this.securityConfig();
     const codeHash = this.hashCode(security.secret, this.normalizeCode(code));
-    return this.withTransaction(async (client) => {
+    // Retry wrapper: the handover transaction upgrades the order lock from
+    // FOR SHARE (OrdersService.getOrderForHandover) to FOR UPDATE
+    // (markHandedOver), so two concurrent handovers can deadlock (40P01) or hit
+    // a serialization failure (40001). D15.3 pattern: retry ONCE on a fresh
+    // transaction (the failed one rolled back, so nothing can be duplicated)
+    // and surface a stable 409 when the retry also loses.
+    return this.withTransactionRetry(async (client) => {
       await this.access.requireTenant(
         actorUserId,
         tenantId,
@@ -487,6 +550,23 @@ export class PickupService {
         tenantId,
         credential.order_id,
       );
+      // The lookup above happened before this transaction took the order lock,
+      // so a concurrent handover may have committed in between. Re-read the
+      // credential now that the order row is locked: a replay must report
+      // PICKUP_CREDENTIAL_CONSUMED (staff has to learn the code is used) rather
+      // than the generic order-state conflict.
+      const refreshed = await client.query<CredentialLookupRow>(
+        `SELECT ${CREDENTIAL_LOOKUP_COLUMNS}
+           FROM pickup_credentials c
+           JOIN orders o ON o.id = c.order_id
+          WHERE c.code_hash = $1`,
+        [codeHash],
+      );
+      this.assertCredentialUsable(refreshed.rows[0], tenantId);
+      // R3-04: terminal order states are rejected with a clear domain code
+      // even when the credential row still looks active (cancellation lives
+      // in the orders slice and cannot revoke credentials from here).
+      this.assertOrderEligibleForPickup(order.status);
       await this.orders.markHandedOver(
         client,
         tenantId,
@@ -501,9 +581,35 @@ export class PickupService {
         [credential.credential_id],
       );
       if (consumed.rowCount !== 1) {
+        // R3-11: report WHY the consume lost the race based on the committed
+        // row state: a concurrent rotation revokes (the order stays ready and
+        // the NEW code is still usable), a replay consumes.
+        const state = await client.query<{
+          revoked: boolean;
+          consumed: boolean;
+        }>(
+          `SELECT (revoked_at IS NOT NULL) AS revoked,
+                  (consumed_at IS NOT NULL) AS consumed
+             FROM pickup_credentials WHERE id = $1`,
+          [credential.credential_id],
+        );
+        const current = state.rows[0];
+        if (current?.revoked) {
+          throw new ConflictException({
+            code: PICKUP_ERROR_CODES.credentialRevoked,
+            message:
+              'Pickup credential was revoked (rotated) during the handover; use the newest code',
+          });
+        }
+        if (current?.consumed) {
+          throw new ConflictException({
+            code: PICKUP_ERROR_CODES.credentialConsumed,
+            message: 'Pickup credential was already used at handover',
+          });
+        }
         throw new ConflictException({
-          code: PICKUP_ERROR_CODES.credentialConsumed,
-          message: 'Pickup credential was already used or revoked',
+          code: PICKUP_ERROR_CODES.handoverConflict,
+          message: 'Pickup credential changed concurrently; retry',
         });
       }
       try {
@@ -549,6 +655,11 @@ export class PickupService {
    * credential is active, decrypted server-side from code_ciphertext. Another
    * buyer's order is a 404, never a 403 (no existence leak). Response carries
    * Cache-Control: no-store at the controller.
+   *
+   * R3-04/R3-05 (root decision): an EXPIRED credential or an order in a
+   * terminal state (cancelled/declined/completed) reads as 404
+   * PICKUP_CREDENTIAL_NOT_FOUND - consistent with "no active credential", so
+   * the buyer never presents a ticket the counter is guaranteed to reject.
    */
   async getBuyerCredential(
     buyerUserId: string,
@@ -568,7 +679,9 @@ export class PickupService {
         WHERE c.order_id = $1
           AND o.buyer_id = $2
           AND c.revoked_at IS NULL
-          AND c.consumed_at IS NULL`,
+          AND c.consumed_at IS NULL
+          AND c.expires_at > now()
+          AND o.status NOT IN ('cancelled', 'declined', 'completed')`,
       [orderId, buyerUserId],
     );
     const row = result.rows[0];
@@ -605,11 +718,27 @@ export class PickupService {
   // ---------------------------------------------------------------------------
 
   /**
+   * R3-04: an order that reached a terminal state must not present its
+   * credential as usable, even while the credential row still looks active
+   * (the cancellation/decline decision lives in the orders slice, which does
+   * not revoke credentials). Verified + handed-over codes get a clear 409.
+   */
+  private assertOrderEligibleForPickup(status: OrderStatus): void {
+    if (isTerminalOrderStatus(status)) {
+      throw new ConflictException({
+        code: PICKUP_ERROR_CODES.orderNotEligible,
+        message: `Order is ${status}; its pickup credential is no longer usable`,
+      });
+    }
+  }
+
+  /**
    * Shared rejection ladder for a presented code (verify + handover):
    * unknown code -> 409 (not 404: a foreign code must stay distinguishable
    * from garbage per root brief, and 409 avoids client auth-interceptors
    * treating it as session expiry); foreign tenant -> 404 (existence is never
-   * leaked across tenants); revoked/consumed -> 409; expired -> 410.
+   * leaked across tenants - accepted-risk note in docs/modules/pickup.md,
+   * R3-06); revoked/consumed -> 409; expired -> 410.
    */
   private assertCredentialUsable(
     row: CredentialLookupRow | undefined,
@@ -799,6 +928,33 @@ export class PickupService {
   private assertUuid(value: string, label: string): void {
     if (!uuidPattern.test(value ?? '')) {
       throw new BadRequestException(`Invalid ${label}`);
+    }
+  }
+
+  /**
+   * One-shot retry for PostgreSQL concurrency failures (deadlock 40P01 /
+   * serialization 40001) as fixed by D15.3 for checkout. Only a transaction
+   * that already rolled back is retried, so no effect can be duplicated; a
+   * second failure becomes a stable 409 instead of a 500.
+   */
+  private async withTransactionRetry<T>(
+    operation: (client: PoolClient) => Promise<T>,
+  ): Promise<T> {
+    try {
+      return await this.withTransaction(operation);
+    } catch (error) {
+      if (!isConcurrencyFailure(error)) throw error;
+      try {
+        return await this.withTransaction(operation);
+      } catch (retryError) {
+        if (isConcurrencyFailure(retryError)) {
+          throw new ConflictException({
+            code: PICKUP_ERROR_CODES.handoverConflict,
+            message: 'Pickup operation conflicted with a concurrent one; retry',
+          });
+        }
+        throw retryError;
+      }
     }
   }
 

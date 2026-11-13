@@ -65,6 +65,15 @@ function hmacOf(normalizedCode: string): string {
     .digest('hex');
 }
 
+/**
+ * Unique, well-formed raw code per call. `pickup_credentials.code_hash` is
+ * globally unique, so a hard-coded test code collides with itself on the second
+ * run against the same database (23505 pickup_credentials_code_hash_unique).
+ */
+function rawCode(prefix: string): string {
+  return (prefix + randomBytes(9).toString('hex')).toUpperCase();
+}
+
 describe(
   'Pickup credentials, verification and one-time handover (PostgreSQL)',
   { skip: !testDatabaseUrl },
@@ -91,7 +100,13 @@ describe(
       const outbox = new OutboxService(database);
       const config: Record<string, string | number> = {
         ORDER_PROPOSAL_TTL_SECONDS: 600,
-        ORDER_PREPARATION_LEAD_SECONDS: 7200,
+        // A wide preparation lead so the deterministic fixture slot (tomorrow
+        // 10:00 Asia/Jakarta, always inside operating hours) is eligible for
+        // "prepare" without depending on the wall clock: tomorrow 10:00 is at
+        // most 34 hours away, so a two-day lead always covers it (a 24-hour
+        // lead fails when the suite runs between 10:00 and 24:00 local time).
+        // The production lead gate belongs to the orders slice, not this suite.
+        ORDER_PREPARATION_LEAD_SECONDS: 172_800,
         AUTH_SECRET: TEST_AUTH_SECRET,
         AUTH_ENCRYPTION_KEY: randomBytes(32).toString('base64'),
         PICKUP_CREDENTIAL_TTL_SECONDS: TEST_TTL_SECONDS,
@@ -128,7 +143,7 @@ describe(
       const { order } = await makeReadyOrder(fx);
 
       // Not ready -> 409 PICKUP_NOT_READY (fresh paid order).
-      const pendingSlot = await insertSlot(fx.tenantId, { minutesFromNow: 45 });
+      const pendingSlot = await insertSlot(fx.tenantId, { offsetMinutes: 45 });
       const pending = await placeOrder(fx, pendingSlot, 'pickup-not-ready');
       await assert.rejects(
         pickup.issueCredential(fx.pickupStaffId, fx.tenantId, pending.id),
@@ -188,7 +203,7 @@ describe(
       const audits = await credentialAudits(order.id);
       assert.deepEqual(
         audits.map((row2) => row2.action),
-        ['tenant.pickup.credential_issued'],
+        ['tenant.pickup.credential.issued'],
       );
     });
 
@@ -405,19 +420,19 @@ describe(
 
     it('rejects a handover before ready_for_pickup and rolls every effect back', async () => {
       const fx = await createFixture();
-      const slot = await insertSlot(fx.tenantId, { minutesFromNow: 60 });
+      const slot = await insertSlot(fx.tenantId, { offsetMinutes: 60 });
       const order = await placeOrder(fx, slot, 'pickup-too-early');
       // Credential exists (raw insert, as if issued) but the order never
       // reached ready_for_pickup: markHandedOver must 409 and the transaction
       // must leave no consumed credential and no handover row behind.
-      const rawCode = 'RAWCODE9';
+      const tooEarlyCode = rawCode('RAW');
       await pool.query(
         "INSERT INTO pickup_credentials (order_id, code_hash, code_ciphertext, expires_at) VALUES ($1, $2, 'v1:test', now() + interval '2 hours')",
-        [order.id, hmacOf(rawCode)],
+        [order.id, hmacOf(tooEarlyCode)],
       );
       const before = await sideEffectCounts(order.id);
       await assert.rejects(
-        pickup.handover(fx.pickupStaffId, fx.tenantId, rawCode),
+        pickup.handover(fx.pickupStaffId, fx.tenantId, tooEarlyCode),
         (error: unknown) =>
           error instanceof ConflictException &&
           codeOf(error) === 'ORDER_STATE_CONFLICT',
@@ -472,6 +487,14 @@ describe(
         (error: unknown) =>
           error instanceof GoneException &&
           codeOf(error) === 'PICKUP_CREDENTIAL_EXPIRED',
+      );
+      // R3-05 (root decision): the owner read of an EXPIRED credential is a
+      // 404 - the buyer must never present a ticket the counter will reject.
+      await assert.rejects(
+        pickup.getBuyerCredential(fx.buyerId, order.id),
+        (error: unknown) =>
+          error instanceof NotFoundException &&
+          codeOf(error) === 'PICKUP_CREDENTIAL_NOT_FOUND',
       );
       const credential = (
         await pool.query<{ consumed_at: string | null }>(
@@ -600,7 +623,7 @@ describe(
       assert.equal(revokedEvent.reason, 'Kode bocor di foto');
       const audits = await credentialAudits(order.id);
       const revokedAudit = audits.find(
-        (row) => row.action === 'tenant.pickup.credential_revoked',
+        (row) => row.action === 'tenant.pickup.credential.revoked',
       );
       assert.ok(revokedAudit);
       assert.equal(revokedAudit.reason, 'Kode bocor di foto');
@@ -650,18 +673,21 @@ describe(
 
     it('database rejects consumed+revoked together, foreign-order handovers and two active credentials', async () => {
       const fx = await createFixture();
-      const slot = await insertSlot(fx.tenantId, { minutesFromNow: 90 });
+      const slot = await insertSlot(fx.tenantId, { offsetMinutes: 90 });
       const order = await placeOrder(fx, slot, 'pickup-db-rules');
-      const otherSlot = await insertSlot(fx.tenantId, { minutesFromNow: 120 });
+      const otherSlot = await insertSlot(fx.tenantId, { offsetMinutes: 120 });
       const otherOrder = await placeOrder(fx, otherSlot, 'pickup-db-rules-2');
+      const consumedCredentialId = randomUUID();
+      const foreignCredentialId = randomUUID();
       await pool.query(
         "INSERT INTO pickup_credentials (id, order_id, code_hash, code_ciphertext, expires_at, consumed_at) VALUES ($1, $2, $3, 'v1:test', now() + interval '2 hours', now())",
-        ['aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1', order.id, hmacOf('DBRULES1')],
+        [consumedCredentialId, order.id, hmacOf(rawCode('DBR'))],
       );
       // CHECK pickup_credentials_consume_revoke_check: never both.
       await assert.rejects(
         pool.query(
-          "UPDATE pickup_credentials SET revoked_at = now() WHERE id = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1'",
+          'UPDATE pickup_credentials SET revoked_at = now() WHERE id = $1',
+          [consumedCredentialId],
         ),
         (error: unknown) => {
           const pgError = error as { code?: string; constraint?: string };
@@ -675,21 +701,12 @@ describe(
       // a handover cannot pair an order with another order's credential.
       await pool.query(
         "INSERT INTO pickup_credentials (id, order_id, code_hash, code_ciphertext, expires_at) VALUES ($1, $2, $3, 'v1:test', now() + interval '2 hours')",
-        [
-          'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb2',
-          otherOrder.id,
-          hmacOf('DBRULES2'),
-        ],
+        [foreignCredentialId, otherOrder.id, hmacOf(rawCode('DBX'))],
       );
       await assert.rejects(
         pool.query(
           'INSERT INTO order_handovers (order_id, credential_id, tenant_id, actor_user_id) VALUES ($1, $2, $3, $4)',
-          [
-            order.id,
-            'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb2',
-            fx.tenantId,
-            fx.pickupStaffId,
-          ],
+          [order.id, foreignCredentialId, fx.tenantId, fx.pickupStaffId],
         ),
         (error: unknown) => {
           const pgError = error as { code?: string; constraint?: string };
@@ -703,7 +720,7 @@ describe(
       await assert.rejects(
         pool.query(
           "INSERT INTO pickup_credentials (order_id, code_hash, code_ciphertext, expires_at) VALUES ($1, $2, 'v1:test', now() + interval '2 hours')",
-          [order.id, hmacOf('DBRULES3')],
+          [order.id, hmacOf(rawCode('DBU'))],
         ),
         (error: unknown) => {
           const pgError = error as { code?: string; constraint?: string };
@@ -713,6 +730,277 @@ describe(
           );
         },
       );
+    });
+
+    it('maps the partial-unique collision of a consumed credential to 409, never 500 (R3-03)', async () => {
+      const fx = await createFixture();
+      const { order } = await makeReadyOrder(fx);
+      // A consumed credential still occupies the partial unique slot
+      // (revoked_at IS NULL), so re-issuance cannot insert a second one.
+      await pool.query(
+        "INSERT INTO pickup_credentials (order_id, code_hash, code_ciphertext, expires_at, consumed_at) VALUES ($1, $2, 'v1:test', now() + interval '2 hours', now())",
+        [order.id, hmacOf(rawCode('R3C'))],
+      );
+      const before = await sideEffectCounts(order.id);
+      await assert.rejects(
+        pickup.issueCredential(fx.pickupStaffId, fx.tenantId, order.id),
+        (error: unknown) =>
+          error instanceof ConflictException &&
+          codeOf(error) === 'PICKUP_CREDENTIAL_CONSUMED',
+      );
+      const after = await sideEffectCounts(order.id);
+      assert.deepEqual(after, before, 'the failed issuance must roll back');
+    });
+
+    it('rejects issue, verify and handover of a cancelled order and 404s the buyer read (R3-04)', async () => {
+      const fx = await createFixture();
+      const { order } = await makeReadyOrder(fx);
+      const issued = await pickup.issueCredential(
+        fx.pickupStaffId,
+        fx.tenantId,
+        order.id,
+      );
+      await cancelOrder(order.id, fx.ownerId, 'Kampus membatalkan pesanan');
+
+      await assert.rejects(
+        pickup.issueCredential(fx.pickupStaffId, fx.tenantId, order.id),
+        (error: unknown) =>
+          error instanceof ConflictException &&
+          codeOf(error) === 'PICKUP_ORDER_NOT_ELIGIBLE',
+      );
+      await assert.rejects(
+        pickup.verifyCode(fx.pickupStaffId, fx.tenantId, issued.data.code),
+        (error: unknown) =>
+          error instanceof ConflictException &&
+          codeOf(error) === 'PICKUP_ORDER_NOT_ELIGIBLE',
+      );
+      await assert.rejects(
+        pickup.handover(fx.pickupStaffId, fx.tenantId, issued.data.code),
+        (error: unknown) =>
+          error instanceof ConflictException &&
+          codeOf(error) === 'PICKUP_ORDER_NOT_ELIGIBLE',
+      );
+      // The buyer must never be shown a code the counter is guaranteed to
+      // reject, even though the credential row is still "active".
+      await assert.rejects(
+        pickup.getBuyerCredential(fx.buyerId, order.id),
+        (error: unknown) =>
+          error instanceof NotFoundException &&
+          codeOf(error) === 'PICKUP_CREDENTIAL_NOT_FOUND',
+      );
+      assert.equal(
+        (
+          await pool.query<{ status: string }>(
+            'SELECT status FROM orders WHERE id = $1',
+            [order.id],
+          )
+        ).rows[0].status,
+        'cancelled',
+      );
+    });
+
+    it('lets exactly one of two parallel handovers win (R3-02c)', async () => {
+      const fx = await createFixture();
+      const { order } = await makeReadyOrder(fx);
+      const issued = await pickup.issueCredential(
+        fx.pickupStaffId,
+        fx.tenantId,
+        order.id,
+      );
+      const results = await Promise.allSettled([
+        pickup.handover(fx.pickupStaffId, fx.tenantId, issued.data.code),
+        pickup.handover(fx.pickupStaffId, fx.tenantId, issued.data.code),
+      ]);
+      const fulfilled = results.filter((r) => r.status === 'fulfilled');
+      const rejected = results.filter(
+        (r): r is PromiseRejectedResult => r.status === 'rejected',
+      );
+      assert.equal(fulfilled.length, 1, 'exactly one handover must succeed');
+      assert.equal(rejected.length, 1);
+      const rejection = rejected[0].reason;
+      assert.ok(
+        rejection instanceof ConflictException,
+        'the loser must get a domain 409, never a raw database error',
+      );
+      assert.ok(
+        ['PICKUP_CREDENTIAL_CONSUMED', 'PICKUP_HANDOVER_CONFLICT'].includes(
+          codeOf(rejection) ?? '',
+        ),
+        'unexpected loser code: ' + String(codeOf(rejection)),
+      );
+      assert.equal(
+        (
+          await pool.query<{ n: string }>(
+            'SELECT count(*)::text AS n FROM order_handovers WHERE order_id = $1',
+            [order.id],
+          )
+        ).rows[0].n,
+        '1',
+      );
+      const credential = (
+        await pool.query<{
+          consumed_at: string | null;
+          revoked_at: string | null;
+        }>(
+          'SELECT consumed_at, revoked_at FROM pickup_credentials WHERE id = $1',
+          [issued.data.credentialId],
+        )
+      ).rows[0];
+      assert.ok(credential.consumed_at);
+      assert.equal(credential.revoked_at, null);
+      assert.equal(
+        (
+          await pool.query<{ status: string }>(
+            'SELECT status FROM orders WHERE id = $1',
+            [order.id],
+          )
+        ).rows[0].status,
+        'completed',
+      );
+    });
+
+    it('reports REVOKED (not CONSUMED) when a handover loses to a rotation (R3-11)', async () => {
+      const fx = await createFixture();
+      const { order } = await makeReadyOrder(fx);
+      const issued = await pickup.issueCredential(
+        fx.pickupStaffId,
+        fx.tenantId,
+        order.id,
+      );
+      // Hold the order row and revoke the credential in an uncommitted
+      // transaction: the handover blocks on the order lock, then finds its
+      // credential revoked when it tries to consume it. Deterministic
+      // reproduction of the handover-vs-rotation race.
+      const blocker = await pool.connect();
+      try {
+        await blocker.query('BEGIN');
+        await blocker.query('SELECT id FROM orders WHERE id = $1 FOR UPDATE', [
+          order.id,
+        ]);
+        await blocker.query(
+          'UPDATE pickup_credentials SET revoked_at = now(), updated_at = now() WHERE id = $1',
+          [issued.data.credentialId],
+        );
+        const handover = pickup.handover(
+          fx.pickupStaffId,
+          fx.tenantId,
+          issued.data.code,
+        );
+        await new Promise((resolve) => setTimeout(resolve, 250));
+        await blocker.query('COMMIT');
+        await assert.rejects(
+          handover,
+          (error: unknown) =>
+            error instanceof ConflictException &&
+            codeOf(error) === 'PICKUP_CREDENTIAL_REVOKED',
+        );
+      } finally {
+        blocker.release();
+      }
+      // Nothing was consumed and the order is still waiting for a new code.
+      assert.equal(
+        (
+          await pool.query<{ n: string }>(
+            'SELECT count(*)::text AS n FROM order_handovers WHERE order_id = $1',
+            [order.id],
+          )
+        ).rows[0].n,
+        '0',
+      );
+      assert.equal(
+        (
+          await pool.query<{ status: string }>(
+            'SELECT status FROM orders WHERE id = $1',
+            [order.id],
+          )
+        ).rows[0].status,
+        'ready_for_pickup',
+      );
+      assert.equal(
+        (
+          await pool.query<{ consumed_at: string | null }>(
+            'SELECT consumed_at FROM pickup_credentials WHERE id = $1',
+            [issued.data.credentialId],
+          )
+        ).rows[0].consumed_at,
+        null,
+      );
+      // A freshly issued code still completes the order afterwards.
+      const reissued = await pickup.issueCredential(
+        fx.pickupStaffId,
+        fx.tenantId,
+        order.id,
+      );
+      const done = await pickup.handover(
+        fx.pickupStaffId,
+        fx.tenantId,
+        reissued.data.code,
+      );
+      assert.equal(done.data.status, 'completed');
+    });
+
+    it('serializes a handover against a concurrent rotation without double effects (R3-02c)', async () => {
+      for (let round = 0; round < 3; round += 1) {
+        const fx = await createFixture();
+        const { order } = await makeReadyOrder(fx);
+        const issued = await pickup.issueCredential(
+          fx.pickupStaffId,
+          fx.tenantId,
+          order.id,
+        );
+        const results = await Promise.allSettled([
+          pickup.handover(fx.pickupStaffId, fx.tenantId, issued.data.code),
+          pickup.issueCredential(fx.pickupStaffId, fx.tenantId, order.id),
+        ]);
+        const handoverWon = results[0].status === 'fulfilled';
+        assert.equal(
+          [results[0], results[1]].filter((r) => r.status === 'fulfilled')
+            .length,
+          1,
+          'exactly one of handover/rotation must win',
+        );
+        const orderRow = (
+          await pool.query<{ status: string }>(
+            'SELECT status FROM orders WHERE id = $1',
+            [order.id],
+          )
+        ).rows[0];
+        const handovers = (
+          await pool.query<{ n: string }>(
+            'SELECT count(*)::text AS n FROM order_handovers WHERE order_id = $1',
+            [order.id],
+          )
+        ).rows[0].n;
+        const active = (
+          await pool.query<{ n: string }>(
+            'SELECT count(*)::text AS n FROM pickup_credentials WHERE order_id = $1 AND revoked_at IS NULL AND consumed_at IS NULL',
+            [order.id],
+          )
+        ).rows[0].n;
+        if (handoverWon) {
+          assert.equal(orderRow.status, 'completed');
+          assert.equal(handovers, '1');
+          assert.equal(active, '0');
+          const rotation = results[1] as PromiseRejectedResult;
+          assert.ok(rotation.reason instanceof ConflictException);
+          assert.equal(codeOf(rotation.reason), 'PICKUP_NOT_READY');
+        } else {
+          assert.equal(orderRow.status, 'ready_for_pickup');
+          assert.equal(handovers, '0');
+          assert.equal(active, '1');
+          const handover = results[0] as PromiseRejectedResult;
+          assert.ok(
+            handover.reason instanceof ConflictException,
+            'a lost handover must be a domain 409',
+          );
+          assert.ok(
+            ['PICKUP_CREDENTIAL_REVOKED', 'PICKUP_HANDOVER_CONFLICT'].includes(
+              codeOf(handover.reason) ?? '',
+            ),
+            'unexpected loser code: ' + String(codeOf(handover.reason)),
+          );
+        }
+      }
     });
   },
 );
@@ -794,16 +1082,35 @@ async function placeOrder(
 
 async function makeReadyOrder(
   fx: Fixture,
-  options: { minutesFromNow?: number } = {},
+  options: { offsetMinutes?: number } = {},
 ): Promise<{ order: { id: string }; slot: { id: string; version: number } }> {
   const slot = await insertSlot(fx.tenantId, {
-    minutesFromNow: options.minutesFromNow ?? 30,
+    offsetMinutes: options.offsetMinutes ?? 30,
   });
   const order = await placeOrder(fx, slot);
   await orders.tenantTransition(fx.ownerId, fx.tenantId, order.id, 'confirm');
   await orders.tenantTransition(fx.kitchenId, fx.tenantId, order.id, 'prepare');
   await orders.tenantTransition(fx.kitchenId, fx.tenantId, order.id, 'ready');
   return { order, slot };
+}
+
+/** Cancels through the orders contract (never a direct orders write). */
+async function cancelOrder(
+  orderId: string,
+  actorUserId: string,
+  reason: string,
+): Promise<void> {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await orders.cancelForRefundDecision(client, orderId, actorUserId, reason);
+    await client.query('COMMIT');
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => undefined);
+    throw error;
+  } finally {
+    client.release();
+  }
 }
 
 function jakartaLocalDate(daysFromNow: number): string {
@@ -816,14 +1123,30 @@ function jakartaLocalDate(daysFromNow: number): string {
   return formatter.format(new Date(Date.now() + daysFromNow * 86_400_000));
 }
 
+/**
+ * Deterministic slot fixture: tomorrow 10:00 Asia/Jakarta plus an offset, so a
+ * slot is always in the future AND inside the fixture's 00:00..23:59:59
+ * operating hours regardless of when the suite runs (a "now + 120 minutes" slot
+ * crosses midnight in the evening and is then rejected as outside operating
+ * hours). ORDER_PREPARATION_LEAD_SECONDS is 0 in this suite, so the fixture
+ * does not need the slot to sit inside the production preparation lead.
+ */
 async function insertSlot(
   tenantId: string,
-  options: { minutesFromNow?: number; capacity?: number } = {},
+  options: { offsetMinutes?: number; capacity?: number } = {},
 ): Promise<{ id: string; version: number }> {
-  const fromNow = options.minutesFromNow;
+  const offset = options.offsetMinutes ?? 0;
   const result = await pool.query<{ id: string; version: number }>(
-    "INSERT INTO pickup_slots (tenant_id, starts_at, ends_at, capacity, reserved_count, status, updated_at) VALUES ($1, COALESCE(now() + ($2::int * interval '1 minute'), ($3::date + '10:00'::time)::timestamp AT TIME ZONE 'Asia/Jakarta'), COALESCE(now() + (($2::int + 60) * interval '1 minute'), ($3::date + '11:00'::time)::timestamp AT TIME ZONE 'Asia/Jakarta'), $4, 0, 'open', now()) RETURNING id, version",
-    [tenantId, fromNow ?? null, jakartaLocalDate(1), options.capacity ?? 5],
+    `INSERT INTO pickup_slots
+       (tenant_id, starts_at, ends_at, capacity, reserved_count, status, updated_at)
+     VALUES ($1,
+             (($3::date + '10:00'::time) + ($2::int * interval '1 minute'))
+               AT TIME ZONE 'Asia/Jakarta',
+             (($3::date + '11:00'::time) + ($2::int * interval '1 minute'))
+               AT TIME ZONE 'Asia/Jakarta',
+             $4, 0, 'open', now())
+     RETURNING id, version`,
+    [tenantId, offset, jakartaLocalDate(1), options.capacity ?? 5],
   );
   return result.rows[0];
 }

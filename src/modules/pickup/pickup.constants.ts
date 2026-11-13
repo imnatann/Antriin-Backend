@@ -1,7 +1,8 @@
 /**
  * Shared constants for the pickup slice (credential issuance/rotation,
  * code verification and the one-time handover). Kept in one module so the
- * service, guard, DTOs and tests agree on the same bounds and error codes.
+ * service, rate-limit interceptor, DTOs and tests agree on the same bounds
+ * and error codes.
  *
  * Security model (AGENTS.md, docs/reviews/wave1-decisions.md D12.10):
  * - the plaintext code is NEVER stored: lookup uses a deterministic
@@ -40,18 +41,27 @@ export const PICKUP_TTL_MAX_SECONDS = 86400;
 export const PICKUP_CODE_GENERATION_ATTEMPTS = 5;
 
 /**
- * Rate limit for code-presentation endpoints (verify + handover): per client
- * IP inside a sliding-window counter (same Redis instance and Lua pattern as
- * AuthRateLimitGuard, distinct key namespace).
+ * Rate limit for code-presentation endpoints (verify + handover), R3-01:
+ * ONLY failed code attempts count toward the quota (PICKUP_CODE_INVALID,
+ * expired, revoked, consumed); successful verifications/handovers never add
+ * to the counter, so legitimate counters are never locked out by traffic.
+ * The bucket is keyed per (client IP, tenant, actor) - not IP alone - and
+ * uses the shared Redis with a distinct namespace (same Lua pattern as
+ * AuthRateLimitGuard). Deployments behind a reverse proxy MUST enable
+ * Fastify trustProxy (root-owned main.ts) or every client shares one IP
+ * bucket; this is documented in docs/modules/pickup.md.
  */
-export const PICKUP_RATE_LIMIT_WINDOW_SECONDS = 600;
-export const PICKUP_RATE_LIMIT_MAX_ATTEMPTS = 30;
+export const PICKUP_RATE_LIMIT_WINDOW_SECONDS = 300;
+export const PICKUP_RATE_LIMIT_MAX_FAILED_ATTEMPTS = 10;
 export const PICKUP_RATE_LIMIT_KEY_PREFIX = 'antriin:pickup:rate:code';
 
-/** Audit actions (convention tenant.<domain>.<entity>.<event>, root brief). */
+/**
+ * Audit actions (convention tenant.<domain>.<entity>.<event>, R3-10 aligns
+ * with the catalog/availability taxonomy, e.g. tenant.menu.item.price_changed).
+ */
 export const PICKUP_AUDIT_ACTIONS = {
-  issued: 'tenant.pickup.credential_issued',
-  revoked: 'tenant.pickup.credential_revoked',
+  issued: 'tenant.pickup.credential.issued',
+  revoked: 'tenant.pickup.credential.revoked',
 } as const;
 
 /** Reason bound (mirrors order transition reasons: audit + event). */
@@ -80,6 +90,10 @@ export const PICKUP_ERROR_CODES = {
   credentialExpired: 'PICKUP_CREDENTIAL_EXPIRED',
   /** Concurrent handover race resolved by DB unique/FK defenses. */
   handoverConflict: 'PICKUP_HANDOVER_CONFLICT',
+  /** R3-04: the order reached a terminal state (cancelled/declined/completed);
+   * its credential is no longer usable even if the row still looks active
+   * (the cancellation decision lives in the orders slice). */
+  orderNotEligible: 'PICKUP_ORDER_NOT_ELIGIBLE',
   /** Extremely unlikely: repeated code_hash collisions during generation. */
   codeGenerationFailed: 'pickup_code_generation_failed',
   /** AUTH_SECRET / AUTH_ENCRYPTION_KEY missing or malformed. */
