@@ -29,7 +29,7 @@ export class ApiExceptionFilter implements ExceptionFilter {
       exception instanceof HttpException ? exception.getResponse() : undefined;
     // Preserve the established readiness response used by infrastructure probes.
     if (
-      request.url.split('?')[0] === '/v1/health/ready' &&
+      request.url.split('?')[0] === '/api/v1/health/ready' &&
       status === 503 &&
       typeof body === 'object' &&
       body !== null &&

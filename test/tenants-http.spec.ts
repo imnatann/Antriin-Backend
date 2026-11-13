@@ -131,7 +131,7 @@ describe(
       app = module.createNestApplication<NestFastifyApplication>(
         new FastifyAdapter(),
       );
-      app.setGlobalPrefix('v1');
+      app.setGlobalPrefix('api/v1');
       app.useGlobalFilters(new ApiExceptionFilter());
       app.useGlobalPipes(
         new ValidationPipe({
@@ -152,7 +152,7 @@ describe(
     it('serves public campus discovery and validates query DTOs', async () => {
       const list = await app.inject({
         method: 'GET',
-        url: `/v1/campuses?search=${encodeURIComponent(`HTTP CONTRACT ${run}`)}`,
+        url: `/api/v1/campuses?search=${encodeURIComponent(`HTTP CONTRACT ${run}`)}`,
       });
       assert.equal(list.statusCode, 200);
       assert.deepEqual(
@@ -162,14 +162,14 @@ describe(
 
       const detail = await app.inject({
         method: 'GET',
-        url: `/v1/campuses/${campus}`,
+        url: `/api/v1/campuses/${campus}`,
       });
       assert.equal(detail.statusCode, 200);
       assert.equal(detail.json().data.timezone, 'Asia/Jakarta');
 
       const campusTenants = await app.inject({
         method: 'GET',
-        url: `/v1/campuses/${campus}/tenants`,
+        url: `/api/v1/campuses/${campus}/tenants`,
       });
       assert.equal(campusTenants.statusCode, 200);
       assert.deepEqual(
@@ -180,14 +180,14 @@ describe(
 
       const badStatus = await app.inject({
         method: 'GET',
-        url: `/v1/campuses/${campus}/tenants?status=archived`,
+        url: `/api/v1/campuses/${campus}/tenants?status=archived`,
       });
       assert.equal(badStatus.statusCode, 400);
       assert.equal(badStatus.json().error.code, 'VALIDATION_ERROR');
 
       const badUuid = await app.inject({
         method: 'GET',
-        url: '/v1/campuses/not-a-uuid',
+        url: '/api/v1/campuses/not-a-uuid',
       });
       assert.equal(badUuid.statusCode, 400);
     });
@@ -195,7 +195,7 @@ describe(
     it('requires auth, rejects unknown fields, and creates tenants with microsecond updatedAt', async () => {
       const unauthorized = await app.inject({
         method: 'POST',
-        url: `/v1/campuses/${campus}/tenants`,
+        url: `/api/v1/campuses/${campus}/tenants`,
         payload: { name: 'Tanpa token', location: 'X', reason: 'Y' },
       });
       assert.equal(unauthorized.statusCode, 401);
@@ -205,7 +205,7 @@ describe(
 
       const forbidden = await app.inject({
         method: 'POST',
-        url: `/v1/campuses/${campus}/tenants`,
+        url: `/api/v1/campuses/${campus}/tenants`,
         headers: { authorization: 'Bearer token-outsider' },
         payload: { name: 'Bukan admin', location: 'X', reason: 'Y' },
       });
@@ -214,7 +214,7 @@ describe(
 
       const unknownField = await app.inject({
         method: 'POST',
-        url: `/v1/campuses/${campus}/tenants`,
+        url: `/api/v1/campuses/${campus}/tenants`,
         headers: { authorization: 'Bearer token-admin' },
         payload: {
           name: 'Ada field asing',
@@ -229,7 +229,7 @@ describe(
 
       const created = await app.inject({
         method: 'POST',
-        url: `/v1/campuses/${campus}/tenants`,
+        url: `/api/v1/campuses/${campus}/tenants`,
         headers: { authorization: 'Bearer token-admin' },
         payload: {
           name: 'Kantin HTTP Baru',
@@ -247,7 +247,7 @@ describe(
     it('round-trips expectedUpdatedAt verbatim for updates (convention D7)', async () => {
       const updated = await app.inject({
         method: 'PATCH',
-        url: `/v1/campuses/${campus}/tenants/${createdTenantId}`,
+        url: `/api/v1/campuses/${campus}/tenants/${createdTenantId}`,
         headers: { authorization: 'Bearer token-admin' },
         payload: {
           name: 'Kantin HTTP Baru Direvisi',
@@ -261,7 +261,7 @@ describe(
 
       const stale = await app.inject({
         method: 'PATCH',
-        url: `/v1/campuses/${campus}/tenants/${createdTenantId}`,
+        url: `/api/v1/campuses/${campus}/tenants/${createdTenantId}`,
         headers: { authorization: 'Bearer token-admin' },
         payload: {
           name: 'Basi',
@@ -281,7 +281,7 @@ describe(
       );
       const outsiderPause = await app.inject({
         method: 'PATCH',
-        url: `/v1/tenants/${fixtureTenant}/status`,
+        url: `/api/v1/tenants/${fixtureTenant}/status`,
         headers: { authorization: 'Bearer token-outsider' },
         payload: {
           status: 'paused',
@@ -293,7 +293,7 @@ describe(
 
       const paused = await app.inject({
         method: 'PATCH',
-        url: `/v1/tenants/${fixtureTenant}/status`,
+        url: `/api/v1/tenants/${fixtureTenant}/status`,
         headers: { authorization: 'Bearer token-owner' },
         payload: {
           status: 'paused',
@@ -306,7 +306,7 @@ describe(
 
       const badSchedule = await app.inject({
         method: 'PUT',
-        url: `/v1/tenants/${fixtureTenant}/operating-hours`,
+        url: `/api/v1/tenants/${fixtureTenant}/operating-hours`,
         headers: { authorization: 'Bearer token-owner' },
         payload: {
           days: [
@@ -324,7 +324,7 @@ describe(
       );
       const schedule = await app.inject({
         method: 'PUT',
-        url: `/v1/tenants/${fixtureTenant}/operating-hours`,
+        url: `/api/v1/tenants/${fixtureTenant}/operating-hours`,
         headers: { authorization: 'Bearer token-owner' },
         payload: { days: fullWeek, reason: 'Jadwal reguler' },
       });
@@ -333,7 +333,7 @@ describe(
 
       const listed = await app.inject({
         method: 'GET',
-        url: `/v1/tenants/${fixtureTenant}/operating-hours`,
+        url: `/api/v1/tenants/${fixtureTenant}/operating-hours`,
       });
       assert.equal(listed.statusCode, 200);
       assert.equal(listed.json().data.timezone, 'Asia/Jakarta');
@@ -343,7 +343,7 @@ describe(
     it('provisions the first owner once (409 afterwards) and archives with a body reason', async () => {
       const provisioned = await app.inject({
         method: 'POST',
-        url: `/v1/campuses/${campus}/tenants/${createdTenantId}/owner`,
+        url: `/api/v1/campuses/${campus}/tenants/${createdTenantId}/owner`,
         headers: { authorization: 'Bearer token-admin' },
         payload: {
           subjectUserId: ownerSubject,
@@ -355,7 +355,7 @@ describe(
 
       const duplicate = await app.inject({
         method: 'POST',
-        url: `/v1/campuses/${campus}/tenants/${createdTenantId}/owner`,
+        url: `/api/v1/campuses/${campus}/tenants/${createdTenantId}/owner`,
         headers: { authorization: 'Bearer token-admin' },
         payload: { subjectUserId: randomUUID(), reason: 'Owner kedua' },
       });
@@ -368,7 +368,7 @@ describe(
       );
       const archived = await app.inject({
         method: 'DELETE',
-        url: `/v1/campuses/${campus}/tenants/${createdTenantId}`,
+        url: `/api/v1/campuses/${campus}/tenants/${createdTenantId}`,
         headers: { authorization: 'Bearer token-admin' },
         payload: {
           reason: 'Batal onboarding',
@@ -380,7 +380,7 @@ describe(
 
       const gone = await app.inject({
         method: 'GET',
-        url: `/v1/tenants/${createdTenantId}`,
+        url: `/api/v1/tenants/${createdTenantId}`,
       });
       assert.equal(gone.statusCode, 404);
       assert.equal(gone.json().error.code, 'NOT_FOUND');

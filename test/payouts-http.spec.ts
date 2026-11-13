@@ -162,7 +162,7 @@ describe('Payouts HTTP contract', () => {
   let payouts: StubPayoutsService;
 
   const auth = { authorization: 'Bearer test-token' };
-  const base = `/v1/tenants/${TENANT_ID}`;
+  const base = `/api/v1/tenants/${TENANT_ID}`;
   const accountsUrl = base + '/bank-accounts';
   const payoutsUrl = base + '/payouts';
 
@@ -198,7 +198,7 @@ describe('Payouts HTTP contract', () => {
     app = module.createNestApplication<NestFastifyApplication>(
       new FastifyAdapter(),
     );
-    app.setGlobalPrefix('v1');
+    app.setGlobalPrefix('api/v1');
     app.useGlobalPipes(
       new ValidationPipe({
         whitelist: true,
@@ -492,7 +492,7 @@ describe('Payouts HTTP contract', () => {
 
 describe('Campus payout monitoring HTTP contract (F9)', () => {
   const CAMPUS_ID = '55555555-5555-4555-8555-555555555555';
-  const url = '/v1/campuses/' + CAMPUS_ID + '/payouts';
+  const url = '/api/v1/campuses/' + CAMPUS_ID + '/payouts';
   let app: NestFastifyApplication;
   let payouts: StubPayoutsService;
 
@@ -524,7 +524,7 @@ describe('Campus payout monitoring HTTP contract (F9)', () => {
     app = module.createNestApplication<NestFastifyApplication>(
       new FastifyAdapter(),
     );
-    app.setGlobalPrefix('v1');
+    app.setGlobalPrefix('api/v1');
     app.useGlobalPipes(
       new ValidationPipe({
         whitelist: true,
@@ -595,7 +595,7 @@ describe('Campus payout monitoring HTTP contract (F9)', () => {
 
     const badCampus = await app.inject({
       method: 'GET',
-      url: '/v1/campuses/not-a-uuid/payouts',
+      url: '/api/v1/campuses/not-a-uuid/payouts',
       headers: { authorization: 'Bearer test-token' },
     });
     assert.equal(badCampus.statusCode, 400);
@@ -608,12 +608,12 @@ describe('Campus payout monitoring HTTP contract (F9)', () => {
 
   it('exposes no mutating campus payout route', async () => {
     const forbidden: ['POST' | 'DELETE', string][] = [
-      ['POST', '/v1/campuses/' + CAMPUS_ID + '/payouts'],
+      ['POST', '/api/v1/campuses/' + CAMPUS_ID + '/payouts'],
       [
         'POST',
-        '/v1/campuses/' + CAMPUS_ID + '/payouts/' + PAYOUT_ID + '/cancel',
+        '/api/v1/campuses/' + CAMPUS_ID + '/payouts/' + PAYOUT_ID + '/cancel',
       ],
-      ['DELETE', '/v1/campuses/' + CAMPUS_ID + '/payouts/' + PAYOUT_ID],
+      ['DELETE', '/api/v1/campuses/' + CAMPUS_ID + '/payouts/' + PAYOUT_ID],
     ];
     for (const [method, target] of forbidden) {
       const response = await app.inject({

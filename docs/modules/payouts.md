@@ -18,22 +18,22 @@ Aturan yang dipegang (AGENTS.md, docs/PILOT-POLICY.md, REQUIREMENTS §3.8):
 
 ## Endpoint
 
-Semua route `/v1/tenants/:tenantId/...` memerlukan bearer token; `tenantId` dari **path**.
+Semua route `/api/v1/tenants/:tenantId/...` memerlukan bearer token; `tenantId` dari **path**.
 
-| Method | Path                                              | Permission                   | Catatan                                             |
-| ------ | ------------------------------------------------- | ---------------------------- | --------------------------------------------------- |
-| GET    | `/v1/tenants/:tenantId/bank-accounts`             | `tenant.bank_account.manage` | selalu tersamarkan; filter `status`                 |
-| POST   | `/v1/tenants/:tenantId/bank-accounts`             | `tenant.bank_account.manage` | baris baru: status `active`, verifikasi `pending`   |
-| POST   | `/v1/tenants/:tenantId/bank-accounts/:id/replace` | `tenant.bank_account.manage` | baris baru + baris lama `disabled`                  |
-| DELETE | `/v1/tenants/:tenantId/bank-accounts/:id`         | `tenant.bank_account.manage` | `disabled` (tidak dihapus), idempoten               |
-| POST   | `/v1/tenants/:tenantId/bank-accounts/:id/verify`  | `tenant.bank_account.manage` | **503 `BANK_ACCOUNT_VERIFICATION_DISABLED`** (Q4)   |
-| POST   | `/v1/tenants/:tenantId/payouts`                   | `tenant.payout.request`      | wajib `Idempotency-Key`; hold atomik                |
-| GET    | `/v1/tenants/:tenantId/payouts`                   | `tenant.finance.read`        | cursor; filter `status`                             |
-| GET    | `/v1/tenants/:tenantId/payouts/:payoutId`         | `tenant.finance.read`        | payout + timeline + alokasi settlement              |
-| POST   | `/v1/tenants/:tenantId/payouts/:payoutId/cancel`  | `tenant.payout.request`      | hanya status `requested`                            |
-| GET    | `/v1/campuses/:campusId/payouts`                  | `campus.payouts.read`        | **read-only** pemantauan kampus, selalu tersamarkan |
+| Method | Path                                                  | Permission                   | Catatan                                             |
+| ------ | ----------------------------------------------------- | ---------------------------- | --------------------------------------------------- |
+| GET    | `/api/v1/tenants/:tenantId/bank-accounts`             | `tenant.bank_account.manage` | selalu tersamarkan; filter `status`                 |
+| POST   | `/api/v1/tenants/:tenantId/bank-accounts`             | `tenant.bank_account.manage` | baris baru: status `active`, verifikasi `pending`   |
+| POST   | `/api/v1/tenants/:tenantId/bank-accounts/:id/replace` | `tenant.bank_account.manage` | baris baru + baris lama `disabled`                  |
+| DELETE | `/api/v1/tenants/:tenantId/bank-accounts/:id`         | `tenant.bank_account.manage` | `disabled` (tidak dihapus), idempoten               |
+| POST   | `/api/v1/tenants/:tenantId/bank-accounts/:id/verify`  | `tenant.bank_account.manage` | **503 `BANK_ACCOUNT_VERIFICATION_DISABLED`** (Q4)   |
+| POST   | `/api/v1/tenants/:tenantId/payouts`                   | `tenant.payout.request`      | wajib `Idempotency-Key`; hold atomik                |
+| GET    | `/api/v1/tenants/:tenantId/payouts`                   | `tenant.finance.read`        | cursor; filter `status`                             |
+| GET    | `/api/v1/tenants/:tenantId/payouts/:payoutId`         | `tenant.finance.read`        | payout + timeline + alokasi settlement              |
+| POST   | `/api/v1/tenants/:tenantId/payouts/:payoutId/cancel`  | `tenant.payout.request`      | hanya status `requested`                            |
+| GET    | `/api/v1/campuses/:campusId/payouts`                  | `campus.payouts.read`        | **read-only** pemantauan kampus, selalu tersamarkan |
 
-`POST /v1/tenants/:tenantId/payouts` membalas `{ data, meta: { replayed } }`: `meta.replayed=true`
+`POST /api/v1/tenants/:tenantId/payouts` membalas `{ data, meta: { replayed } }`: `meta.replayed=true`
 berarti request itu memutar ulang `Idempotency-Key` yang sama (tidak ada hold kedua), bukan payout baru
 (F7).
 
@@ -43,7 +43,7 @@ tenant lain -> **404** (bukan 403, tanpa kebocoran keberadaan).
 
 ## Pemantauan kampus (F9, REQUIREMENTS §3.8.7)
 
-`GET /v1/campuses/:campusId/payouts` memberi pengelola kampus pandangan **baca saja** atas payout
+`GET /api/v1/campuses/:campusId/payouts` memberi pengelola kampus pandangan **baca saja** atas payout
 tenant di kampusnya (`campus.payouts.read`): `payoutId`, `tenantId`, `tenantName`, `status`,
 `amountMinor`, `currency`, `bankCode`, `accountNumberMasked`, dan timestamp status. Cursor + filter
 `status` sama seperti daftar tenant.
@@ -53,7 +53,7 @@ tenant di kampusnya (`campus.payouts.read`): `payoutId`, `tenantId`, `tenantName
 - Tidak ada route kampus yang meminta, menyetujui, membatalkan, atau mengganti tujuan payout - controller
   ini hanya punya handler `GET` (`test/payouts-http.spec.ts`, `test/payouts-di.spec.ts`).
 - Nomor rekening penuh, ciphertext, dan hash tidak pernah ikut: hanya bentuk tersamarkan.
-- `GET /v1/campuses/:campusId/settlements` (`campus.transactions.read`) **belum** dibuat - lihat
+- `GET /api/v1/campuses/:campusId/settlements` (`campus.transactions.read`) **belum** dibuat - lihat
   [settlements.md](settlements.md) bagian "Ditunda".
 
 ## Rekening bank
@@ -267,7 +267,7 @@ di-enqueue ulang; baris due > 120 detik memicu alarm log.
   payout (hanya outbox `payout.status_changed`), dan retensi bukti transfer.
 - **FK komposit payout -> rekening (F4): DITUNDA ke migrasi berikutnya.** Schema milik root; untuk
   sementara isolasi tenant ditegakkan service + test (lihat "Invariant yang dijaga database").
-- **`GET /v1/campuses/:campusId/settlements` (F9): DITUNDA**, lihat
+- **`GET /api/v1/campuses/:campusId/settlements` (F9): DITUNDA**, lihat
   [settlements.md](settlements.md). Pemantauan payout kampus sudah ada.
 
 ## Pengujian
@@ -299,7 +299,7 @@ dan kunci enkripsi hilang) dan **penolakan verifikasi rekening non-`active`** (F
 `test/payouts-http.spec.ts` (14 test transport, tanpa DB): 401 di semua route, 201/200 + masking,
 `Idempotency-Key` wajib & bentuknya divalidasi (400 tanpa memanggil service), 400 untuk amount/ID/field
 asing, mapping 409/503/404/403 dengan kode stabil, list/detail/cancel, 403 staf, `meta.replayed` (F7),
-serta blok terpisah untuk `GET /v1/campuses/:campusId/payouts` (401, masking + envelope cursor, 403/400,
+serta blok terpisah untuk `GET /api/v1/campuses/:campusId/payouts` (401, masking + envelope cursor, 403/400,
 dan tidak ada route kampus yang mutasi).
 
 `test/payouts-queue.spec.ts` (2 test, Redis nyata): payload job tidak sah -> `UnrecoverableError` tanpa

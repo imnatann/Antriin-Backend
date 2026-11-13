@@ -73,7 +73,7 @@ Yang masih terbuka (dicatat, bukan diklaim selesai): review/risk/reporting, prof
 
 ## Status implementasi 13 November 2026 (lanjutan 3)
 
-Review independen settlement/payout sudah ditutup seluruhnya (0 blocker, 2 major, 7 minor). Bukti akhir: **382/382 tes integrasi** pada migrasi `0000..0009`, typecheck/lint/format/build lulus, API (`/v1/health/ready`, `/docs`) dan worker boot bersih dengan modul payouts/settlements ter-resolve.
+Review independen settlement/payout sudah ditutup seluruhnya (0 blocker, 2 major, 7 minor). Bukti akhir: **382/382 tes integrasi** pada migrasi `0000..0009`, typecheck/lint/format/build lulus, API (`/api/v1/health/ready`, `/docs`) dan worker boot bersih dengan modul payouts/settlements ter-resolve.
 
 | Commit    | Isi                                                                                                                                                                                                                       |
 | --------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -85,13 +85,47 @@ Review independen settlement/payout sudah ditutup seluruhnya (0 blocker, 2 major
 
 Yang masih terbuka dan **tidak** diklaim selesai:
 
-- `GET /v1/campuses/:campusId/settlements` (pemantauan settlement kampus) — ditunda, dicatat di docs.
+- `GET /api/v1/campuses/:campusId/settlements` (pemantauan settlement kampus) — ditunda, dicatat di docs.
 - FK komposit `(tenant_id, bank_account_id)` untuk `payouts` — perlu migrasi baru (milik root).
 - Trigger DB penolak saldo negatif akun system (Q6) — pengganti sementara: lock + BigInt + test konkurensi.
 - Jalur penyelesaian `needs_assistance` untuk payout/refund dengan hasil provider ambigu.
 - Slice review/risk/reporting, profil `/me`, dispatcher OTP eksternal, dan job operasional (pembersih idempotency/outbox, penyapu release, retensi/rekonsiliasi).
 
 Tidak ada provider nyata, deployment, atau migrasi produksi yang diklaim.
+
+## Status implementasi 13 November 2026 (lanjutan 4) — slice ulasan
+
+Slice **reviews** (KAN-70) diimplementasikan: skema migrasi `0010`, 10 route, dan 18 tes baru (9 PostgreSQL + 9 kontrak HTTP). Detail perilaku ada di [modules/reviews.md](modules/reviews.md).
+
+| Isi            | Rincian                                                                                                                                                                                                                    |
+| -------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Migrasi `0010` | 4 tabel (`reviews`, `review_replies`, `review_reports`, `review_moderation_actions`), FK komposit tenant-ke-order dan tenant-ke-review, unique satu ulasan per order, CHECK rating/status/jejak penyembunyian.             |
+| Aturan inti    | Ulasan hanya untuk order `completed` milik pemanggil + email kampus terverifikasi; satu ulasan per order termasuk yang di-soft-delete; tenant hanya membaca/membalas; moderasi kampus `keep`/`hide` dengan alasan + audit. |
+| Isolasi data   | Route publik `GET /api/v1/tenants/:id/reviews` memakai proyeksi tanpa `buyerId`/`orderId`; tidak ada permission baru (memakai `tenant.reviews.reply` dan `campus.reviews.moderate`).                                       |
+
+Bukti: `npm run test:integration` menerapkan migrasi `0000..0010` pada PostgreSQL baru dan menjalankan **411/411 tes** tanpa skip; typecheck, lint, format dan build lulus. API boot bersih dan `/docs` memuat 9 route reviews serta 2 route reporting.
+
+### Slice reporting (read-only)
+
+Laporan penjualan tenant (`GET /api/v1/tenants/:id/reports/sales`, `tenant.sales.read`) dan dashboard pantauan kampus (`GET /api/v1/campuses/:id/dashboard`, `campus.transactions.read`). Detail ada di [modules/reporting.md](modules/reporting.md). Tanpa tabel baru dan tanpa menulis baris: hanya `count` dan penjumlahan kolom yang sudah ada, dikelompokkan per status, dalam jendela `[from, to)` maksimum 366 hari. Definisi gross/net/fee/pajak tetap tidak dikarang karena REQUIREMENTS §3.8.8 belum memutuskannya.
+
+Yang masih terbuka dan **tidak** diklaim selesai:
+
+- Antrean sinyal risiko (mis. lonjakan rating) dan `risk_reviews` — slice `risk` masih scaffold.
+- Ekspor laporan (CSV/PDF), penjadwalan laporan, dan read replica/materialized projection untuk volume besar.
+- Profil `/me`, dispatcher OTP eksternal, dan job operasional (pembersih idempotency/outbox, penyapu release, retensi/rekonsiliasi).
+- Trigger DB penolak saldo negatif akun system (Q6) dan jalur penyelesaian `needs_assistance`.
+
+Tidak ada provider nyata, deployment, atau migrasi produksi yang diklaim.
+
+## Status implementasi 13 November 2026 (lanjutan 5) — prefix `/api/v1` dan panduan API
+
+Perubahan transport dan dokumentasi, tanpa perubahan perilaku bisnis:
+
+- **Prefix global menjadi `/api/v1`** (sebelumnya `/v1`). Diperbarui di `src/main.ts`, pengecualian readiness pada `ApiExceptionFilter`, seluruh test HTTP, probe readiness di `deploy/compose.yaml`, `deploy/remote-deploy.sh`, `.github/workflows/ci.yml` dan `deploy.yml`, serta dokumentasi. Tidak ada route bisnis yang berubah selain prefix.
+- **Panduan API untuk agent frontend**: `GET /api/v1/guide` (HTML), `/api/v1/guide.md` (Markdown), `/api/v1/guide/openapi.json`. Dihasilkan saat request dari dokumen OpenAPI yang berjalan sehingga daftar endpoint dan object tidak bisa menyimpang dari kode; konvensi, role/permission, state machine dan daftar "belum tersedia" ditulis di `api-guide.content.ts`. Detail: [modules/api-guide.md](modules/api-guide.md).
+
+Bukti: `npm run test:integration` menerapkan migrasi `0000..0010` pada PostgreSQL baru dan menjalankan **418/418 tes** tanpa skip; typecheck, lint, format dan build lulus. API boot dengan `SWAGGER_ENABLED=true` melayani `/api/v1/health/live`, `/api/v1/guide`, `/api/v1/guide.md` dan `/api/v1/guide/openapi.json` (200), sedangkan `/v1/health/live` sekarang 404.
 
 ## Paket kerja dan Jira
 

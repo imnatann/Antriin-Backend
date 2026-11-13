@@ -85,7 +85,7 @@ describe('Catalog HTTP contract', () => {
     app = module.createNestApplication<NestFastifyApplication>(
       new FastifyAdapter(),
     );
-    app.setGlobalPrefix('v1');
+    app.setGlobalPrefix('api/v1');
     app.useGlobalPipes(
       new ValidationPipe({
         whitelist: true,
@@ -106,7 +106,7 @@ describe('Catalog HTTP contract', () => {
   it('serves buyer discovery without authentication and validates query input', async () => {
     const ok = await app.inject({
       method: 'GET',
-      url: `/v1/tenants/${tenantId}/menu?status=sold_out&search=nasi`,
+      url: `/api/v1/tenants/${tenantId}/menu?status=sold_out&search=nasi`,
     });
     assert.equal(ok.statusCode, 200);
     assert.deepEqual(calls.at(-1)?.args[0], tenantId);
@@ -121,19 +121,19 @@ describe('Catalog HTTP contract', () => {
 
     const badStatus = await app.inject({
       method: 'GET',
-      url: `/v1/tenants/${tenantId}/menu?status=archived`,
+      url: `/api/v1/tenants/${tenantId}/menu?status=archived`,
     });
     assert.equal(badStatus.statusCode, 400);
 
     const badTenant = await app.inject({
       method: 'GET',
-      url: '/v1/tenants/not-a-uuid/menu',
+      url: '/api/v1/tenants/not-a-uuid/menu',
     });
     assert.equal(badTenant.statusCode, 400);
 
     const detail = await app.inject({
       method: 'GET',
-      url: `/v1/tenants/${tenantId}/menu/items/${itemId}`,
+      url: `/api/v1/tenants/${tenantId}/menu/items/${itemId}`,
     });
     assert.equal(detail.statusCode, 200);
     assert.equal(calls.at(-1)?.method, 'getMenuItem');
@@ -142,53 +142,56 @@ describe('Catalog HTTP contract', () => {
   it('requires authentication for every admin route', async () => {
     // Review R2-12: EVERY admin route must require authentication.
     const routes: [string, string, object?][] = [
-      ['GET', `/v1/tenants/${tenantId}/menu/manage`],
-      ['POST', `/v1/tenants/${tenantId}/menu/categories`, { name: 'X' }],
+      ['GET', `/api/v1/tenants/${tenantId}/menu/manage`],
+      ['POST', `/api/v1/tenants/${tenantId}/menu/categories`, { name: 'X' }],
       [
         'PATCH',
-        `/v1/tenants/${tenantId}/menu/categories/${categoryId}`,
+        `/api/v1/tenants/${tenantId}/menu/categories/${categoryId}`,
         { name: 'Y' },
       ],
       [
         'DELETE',
-        `/v1/tenants/${tenantId}/menu/categories/${categoryId}?reason=r`,
+        `/api/v1/tenants/${tenantId}/menu/categories/${categoryId}?reason=r`,
       ],
       [
         'POST',
-        `/v1/tenants/${tenantId}/menu/items`,
+        `/api/v1/tenants/${tenantId}/menu/items`,
         { categoryId, name: 'X', priceMinor: '1' },
       ],
       [
         'PATCH',
-        `/v1/tenants/${tenantId}/menu/items/${itemId}`,
+        `/api/v1/tenants/${tenantId}/menu/items/${itemId}`,
         { priceMinor: '2', expectedVersion: 1 },
       ],
-      ['DELETE', `/v1/tenants/${tenantId}/menu/items/${itemId}?reason=r`],
+      ['DELETE', `/api/v1/tenants/${tenantId}/menu/items/${itemId}?reason=r`],
       [
         'POST',
-        `/v1/tenants/${tenantId}/menu/items/${itemId}/option-groups`,
+        `/api/v1/tenants/${tenantId}/menu/items/${itemId}/option-groups`,
         { name: 'G' },
       ],
       [
         'PATCH',
-        `/v1/tenants/${tenantId}/menu/option-groups/${groupId}`,
+        `/api/v1/tenants/${tenantId}/menu/option-groups/${groupId}`,
         { name: 'H', expectedVersion: 1 },
       ],
       [
         'DELETE',
-        `/v1/tenants/${tenantId}/menu/option-groups/${groupId}?reason=r`,
+        `/api/v1/tenants/${tenantId}/menu/option-groups/${groupId}?reason=r`,
       ],
       [
         'POST',
-        `/v1/tenants/${tenantId}/menu/option-groups/${groupId}/choices`,
+        `/api/v1/tenants/${tenantId}/menu/option-groups/${groupId}/choices`,
         { name: 'C' },
       ],
       [
         'PATCH',
-        `/v1/tenants/${tenantId}/menu/choices/${choiceId}`,
+        `/api/v1/tenants/${tenantId}/menu/choices/${choiceId}`,
         { name: 'D', expectedVersion: 1 },
       ],
-      ['DELETE', `/v1/tenants/${tenantId}/menu/choices/${choiceId}?reason=r`],
+      [
+        'DELETE',
+        `/api/v1/tenants/${tenantId}/menu/choices/${choiceId}?reason=r`,
+      ],
     ];
     for (const [method, url, payload] of routes) {
       const response = await app.inject({
@@ -203,7 +206,7 @@ describe('Catalog HTTP contract', () => {
   it('rejects unknown and malformed fields on admin writes', async () => {
     const unknownField = await app.inject({
       method: 'POST',
-      url: `/v1/tenants/${tenantId}/menu/categories`,
+      url: `/api/v1/tenants/${tenantId}/menu/categories`,
       headers: auth,
       payload: { name: 'Minuman', tenantId: randomUUID() },
     });
@@ -211,7 +214,7 @@ describe('Catalog HTTP contract', () => {
 
     const missingName = await app.inject({
       method: 'POST',
-      url: `/v1/tenants/${tenantId}/menu/categories`,
+      url: `/api/v1/tenants/${tenantId}/menu/categories`,
       headers: auth,
       payload: { sortOrder: 1 },
     });
@@ -220,7 +223,7 @@ describe('Catalog HTTP contract', () => {
     for (const priceMinor of ['-5', '10.5', 15000, '1e3']) {
       const badPrice = await app.inject({
         method: 'POST',
-        url: `/v1/tenants/${tenantId}/menu/items`,
+        url: `/api/v1/tenants/${tenantId}/menu/items`,
         headers: auth,
         payload: { categoryId, name: 'Nasi', priceMinor },
       });
@@ -229,7 +232,7 @@ describe('Catalog HTTP contract', () => {
 
     const missingVersion = await app.inject({
       method: 'PATCH',
-      url: `/v1/tenants/${tenantId}/menu/items/${itemId}`,
+      url: `/api/v1/tenants/${tenantId}/menu/items/${itemId}`,
       headers: auth,
       payload: { priceMinor: '16000' },
     });
@@ -237,7 +240,7 @@ describe('Catalog HTTP contract', () => {
 
     const longReason = await app.inject({
       method: 'PATCH',
-      url: `/v1/tenants/${tenantId}/menu/items/${itemId}`,
+      url: `/api/v1/tenants/${tenantId}/menu/items/${itemId}`,
       headers: auth,
       payload: {
         priceMinor: '16000',
@@ -249,7 +252,7 @@ describe('Catalog HTTP contract', () => {
 
     const badDelta = await app.inject({
       method: 'POST',
-      url: `/v1/tenants/${tenantId}/menu/option-groups/${groupId}/choices`,
+      url: `/api/v1/tenants/${tenantId}/menu/option-groups/${groupId}/choices`,
       headers: auth,
       payload: { name: 'Ekstra', priceDeltaMinor: '-1' },
     });
@@ -257,7 +260,7 @@ describe('Catalog HTTP contract', () => {
 
     const badBounds = await app.inject({
       method: 'POST',
-      url: `/v1/tenants/${tenantId}/menu/items/${itemId}/option-groups`,
+      url: `/api/v1/tenants/${tenantId}/menu/items/${itemId}/option-groups`,
       headers: auth,
       payload: { name: 'Sambal', minSelections: -1, maxSelections: 0 },
     });
@@ -267,7 +270,7 @@ describe('Catalog HTTP contract', () => {
   it('passes the session principal and typed DTO into every admin route', async () => {
     const created = await app.inject({
       method: 'POST',
-      url: `/v1/tenants/${tenantId}/menu/items`,
+      url: `/api/v1/tenants/${tenantId}/menu/items`,
       headers: auth,
       payload: {
         categoryId,
@@ -296,7 +299,7 @@ describe('Catalog HTTP contract', () => {
 
     const patched = await app.inject({
       method: 'PATCH',
-      url: `/v1/tenants/${tenantId}/menu/items/${itemId}`,
+      url: `/api/v1/tenants/${tenantId}/menu/items/${itemId}`,
       headers: auth,
       payload: { priceMinor: '16000', expectedVersion: 2 },
     });
@@ -317,14 +320,14 @@ describe('Catalog HTTP contract', () => {
     // DELETE is a soft delete and requires an audit reason query param.
     const missingReason = await app.inject({
       method: 'DELETE',
-      url: `/v1/tenants/${tenantId}/menu/choices/${choiceId}`,
+      url: `/api/v1/tenants/${tenantId}/menu/choices/${choiceId}`,
       headers: auth,
     });
     assert.equal(missingReason.statusCode, 400);
 
     const deleted = await app.inject({
       method: 'DELETE',
-      url: `/v1/tenants/${tenantId}/menu/choices/${choiceId}?reason=Discontinued`,
+      url: `/api/v1/tenants/${tenantId}/menu/choices/${choiceId}?reason=Discontinued`,
       headers: auth,
     });
     assert.equal(deleted.statusCode, 200);
@@ -335,7 +338,7 @@ describe('Catalog HTTP contract', () => {
 
     const manage = await app.inject({
       method: 'GET',
-      url: `/v1/tenants/${tenantId}/menu/manage`,
+      url: `/api/v1/tenants/${tenantId}/menu/manage`,
       headers: auth,
     });
     assert.equal(manage.statusCode, 200);

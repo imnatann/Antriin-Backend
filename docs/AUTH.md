@@ -4,7 +4,7 @@ Status: authentication is implemented behind an OTP delivery port. No real email
 
 ## Endpoints
 
-All endpoints use the `/v1` prefix and JSON bodies. The global Nest validation pipe rejects unknown fields.
+All endpoints use the `/api/v1` prefix and JSON bodies. The global Nest validation pipe rejects unknown fields.
 
 | Method and path                                             | Access | Behavior                                                                                                                                                                                                                                                         |
 | ----------------------------------------------------------- | ------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |

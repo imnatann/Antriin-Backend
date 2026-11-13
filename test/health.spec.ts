@@ -27,7 +27,7 @@ describe('Health HTTP contract', () => {
     app = module.createNestApplication<NestFastifyApplication>(
       new FastifyAdapter(),
     );
-    app.setGlobalPrefix('v1');
+    app.setGlobalPrefix('api/v1');
     await app.init();
     await app.getHttpAdapter().getInstance().ready();
   });
@@ -37,7 +37,7 @@ describe('Health HTTP contract', () => {
   it('keeps liveness independent of external dependencies', async () => {
     const response = await app.inject({
       method: 'GET',
-      url: '/v1/health/live',
+      url: '/api/v1/health/live',
     });
     assert.equal(response.statusCode, 200);
     assert.equal(database.ping.mock.callCount(), 0);
@@ -46,7 +46,7 @@ describe('Health HTTP contract', () => {
   it('reports ready only when both dependencies respond', async () => {
     const response = await app.inject({
       method: 'GET',
-      url: '/v1/health/ready',
+      url: '/api/v1/health/ready',
     });
     assert.equal(response.statusCode, 200);
     assert.deepEqual(response.json(), {
@@ -64,7 +64,7 @@ describe('Health HTTP contract', () => {
       });
       const response = await app.inject({
         method: 'GET',
-        url: '/v1/health/ready',
+        url: '/api/v1/health/ready',
       });
       assert.equal(response.statusCode, 503);
       assert.equal(response.json().dependencies[dependency], false);

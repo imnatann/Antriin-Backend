@@ -14,23 +14,23 @@ Aturan yang dipegang (AGENTS.md, docs/PILOT-POLICY.md):
 
 ### Cases
 
-| Method | Path                                            | Aktor               | Permission                                                                  |
-| ------ | ----------------------------------------------- | ------------------- | --------------------------------------------------------------------------- |
-| POST   | `/v1/orders/:orderId/cases`                     | buyer pemilik order | sesi buyer + kepemilikan order                                              |
-| GET    | `/v1/me/cases` / `/v1/me/cases/:caseId`         | buyer               | hanya kasus miliknya                                                        |
-| POST   | `/v1/tenants/:tenantId/cases`                   | staf tenant         | `tenant.incidents.report`                                                   |
-| GET    | `/v1/tenants/:tenantId/cases` (+ `/:caseId`)    | staf tenant         | `tenant.orders.read`                                                        |
-| POST   | `/v1/campuses/:campusId/cases`                  | campus admin        | `campus.cases.read`                                                         |
-| GET    | `/v1/campuses/:campusId/cases` (+ `/:caseId`)   | campus admin        | `campus.cases.read`                                                         |
-| POST   | `/v1/campuses/:campusId/cases/:caseId/decision` | campus admin        | `campus.cases.decide` (+ `campus.refunds.initiate` untuk `approved_cancel`) |
+| Method | Path                                                | Aktor               | Permission                                                                  |
+| ------ | --------------------------------------------------- | ------------------- | --------------------------------------------------------------------------- |
+| POST   | `/api/v1/orders/:orderId/cases`                     | buyer pemilik order | sesi buyer + kepemilikan order                                              |
+| GET    | `/api/v1/me/cases` / `/api/v1/me/cases/:caseId`     | buyer               | hanya kasus miliknya                                                        |
+| POST   | `/api/v1/tenants/:tenantId/cases`                   | staf tenant         | `tenant.incidents.report`                                                   |
+| GET    | `/api/v1/tenants/:tenantId/cases` (+ `/:caseId`)    | staf tenant         | `tenant.orders.read`                                                        |
+| POST   | `/api/v1/campuses/:campusId/cases`                  | campus admin        | `campus.cases.read`                                                         |
+| GET    | `/api/v1/campuses/:campusId/cases` (+ `/:caseId`)   | campus admin        | `campus.cases.read`                                                         |
+| POST   | `/api/v1/campuses/:campusId/cases/:caseId/decision` | campus admin        | `campus.cases.decide` (+ `campus.refunds.initiate` untuk `approved_cancel`) |
 
 ### Refunds
 
-| Method | Path                             | Aktor               | Permission                 |
-| ------ | -------------------------------- | ------------------- | -------------------------- |
-| GET    | `/v1/orders/:orderId/refund`     | buyer pemilik order | sesi buyer + kepemilikan   |
-| POST   | `/v1/campuses/:campusId/refunds` | campus admin        | `campus.refunds.initiate`  |
-| GET    | `/v1/campuses/:campusId/refunds` | campus admin        | `campus.transactions.read` |
+| Method | Path                                 | Aktor               | Permission                 |
+| ------ | ------------------------------------ | ------------------- | -------------------------- |
+| GET    | `/api/v1/orders/:orderId/refund`     | buyer pemilik order | sesi buyer + kepemilikan   |
+| POST   | `/api/v1/campuses/:campusId/refunds` | campus admin        | `campus.refunds.initiate`  |
+| GET    | `/api/v1/campuses/:campusId/refunds` | campus admin        | `campus.transactions.read` |
 
 Status respons: `POST` yang membuat baris baru (buka kasus, buat refund) menjawab **201**; `POST .../decision` menjawab **200** karena hanya mengubah status kasus yang sudah ada (sesuai `@ApiOkResponse`). Semua route memakai envelope `{ data }` / `{ data, meta }`.
 
@@ -86,7 +86,7 @@ Cases: `CASE_STATUS_INVALID`, `CASE_REASON_REQUIRED`, `CASE_ORDER_REQUIRED`, `CA
 Catatan ketepatan kontrak (review F10):
 
 - `REFUND_LEASE_LOST` adalah kode **internal/audit**, bukan kode HTTP. Kode ini dilempar `fenceOutboxDone` di dalam transaksi saat lease outbox sudah diambil worker lain, lalu ditelan menjadi hasil `{ outcome: 'skipped', reason: 'lease_lost' }` oleh processor. Klien tidak pernah menerimanya dan tidak perlu menanganinya.
-- `REFUND_ALREADY_EXISTS` praktis tidak terjangkau lewat `POST /v1/campuses/:campusId/refunds`: keputusan kedua ditolak lebih dulu oleh orders slice dengan `409 ORDER_CANCEL_CONFLICT` karena order sudah `cancelled`. Mapping `23505 refunds_one_per_order_uq` dipertahankan sebagai pertahanan terakhir (mis. balapan dengan jalur lain), bukan sebagai jalur yang dijanjikan.
+- `REFUND_ALREADY_EXISTS` praktis tidak terjangkau lewat `POST /api/v1/campuses/:campusId/refunds`: keputusan kedua ditolak lebih dulu oleh orders slice dengan `409 ORDER_CANCEL_CONFLICT` karena order sudah `cancelled`. Mapping `23505 refunds_one_per_order_uq` dipertahankan sebagai pertahanan terakhir (mis. balapan dengan jalur lain), bukan sebagai jalur yang dijanjikan.
 - `ORDER_CANCEL_CONFLICT` berasal dari orders slice (bukan kode milik modul ini) dan muncul untuk order terminal (`completed`/`cancelled`/`declined`).
 
 ## Keputusan dan batasan

@@ -145,11 +145,11 @@ describe('Pickup HTTP contract (R3-02b)', () => {
   let fake: FakeRedis;
 
   const auth = { authorization: 'Bearer test-token' };
-  const issueUrl = `/v1/tenants/${TENANT_ID}/orders/${ORDER_ID}/pickup-credential`;
+  const issueUrl = `/api/v1/tenants/${TENANT_ID}/orders/${ORDER_ID}/pickup-credential`;
   const revokeUrl = `${issueUrl}/revocation`;
-  const verifyUrl = `/v1/tenants/${TENANT_ID}/pickup/verification`;
-  const handoverUrl = `/v1/tenants/${TENANT_ID}/pickup/handovers`;
-  const buyerUrl = `/v1/orders/${ORDER_ID}/pickup-credential`;
+  const verifyUrl = `/api/v1/tenants/${TENANT_ID}/pickup/verification`;
+  const handoverUrl = `/api/v1/tenants/${TENANT_ID}/pickup/handovers`;
+  const buyerUrl = `/api/v1/orders/${ORDER_ID}/pickup-credential`;
 
   beforeEach(async () => {
     stub = new StubPickupService();
@@ -191,7 +191,7 @@ describe('Pickup HTTP contract (R3-02b)', () => {
     app = module.createNestApplication<NestFastifyApplication>(
       new FastifyAdapter(),
     );
-    app.setGlobalPrefix('v1');
+    app.setGlobalPrefix('api/v1');
     app.useGlobalPipes(
       new ValidationPipe({
         whitelist: true,
@@ -268,7 +268,7 @@ describe('Pickup HTTP contract (R3-02b)', () => {
 
     const badTenant = await app.inject({
       method: 'POST',
-      url: '/v1/tenants/not-a-uuid/pickup/verification',
+      url: '/api/v1/tenants/not-a-uuid/pickup/verification',
       headers: auth,
       payload: { code: PLAINTEXT },
     });

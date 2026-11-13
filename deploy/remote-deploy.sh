@@ -45,7 +45,7 @@ ANTRIIN_IMAGE="$RUNTIME_IMAGE" docker compose up -d --remove-orphans api worker
 echo '--- waiting for readiness'
 ready=0
 for attempt in $(seq 1 40); do
-  if curl --fail --silent --max-time 5 "http://127.0.0.1:${APP_PORT}/v1/health/ready" >/dev/null 2>&1; then
+  if curl --fail --silent --max-time 5 "http://127.0.0.1:${APP_PORT}/api/v1/health/ready" >/dev/null 2>&1; then
     ready=1
     echo "ready after ${attempt} attempt(s)"
     break
@@ -54,7 +54,7 @@ for attempt in $(seq 1 40); do
 done
 
 if [ "$ready" -ne 1 ]; then
-  echo 'FATAL: /v1/health/ready never became ready' >&2
+  echo 'FATAL: /api/v1/health/ready never became ready' >&2
   docker compose ps >&2 || true
   docker compose logs --tail 80 api worker >&2 || true
   if [ -n "$PREV_IMAGE" ]; then

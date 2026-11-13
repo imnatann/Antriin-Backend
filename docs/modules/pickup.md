@@ -4,13 +4,13 @@ Slice kredensial pengambilan dan serah terima satu kali. Kode milik slice ini; p
 
 ## Endpoint
 
-| Method | Path                                                                 | Aktor         | Permission               | Efek                                                                               |
-| ------ | -------------------------------------------------------------------- | ------------- | ------------------------ | ---------------------------------------------------------------------------------- |
-| POST   | `/v1/tenants/:tenantId/orders/:orderId/pickup-credential`            | staf tenant   | `tenant.orders.handover` | Terbitkan/rotasi kode; plaintext hanya dikembalikan sekali di respons ini          |
-| POST   | `/v1/tenants/:tenantId/orders/:orderId/pickup-credential/revocation` | staf tenant   | `tenant.orders.handover` | Cabut kredensial aktif; `reason` wajib                                             |
-| POST   | `/v1/tenants/:tenantId/pickup/verification`                          | staf tenant   | `tenant.orders.handover` | Verifikasi kode tanpa efek samping                                                 |
-| POST   | `/v1/tenants/:tenantId/pickup/handovers`                             | staf tenant   | `tenant.orders.handover` | Serah terima: order `completed`, reservasi `consumed`, kredensial `consumed`       |
-| GET    | `/v1/orders/:orderId/pickup-credential`                              | buyer pemilik | sesi buyer               | Baca ulang kode aktif miliknya (didekripsi server-side, `Cache-Control: no-store`) |
+| Method | Path                                                                     | Aktor         | Permission               | Efek                                                                               |
+| ------ | ------------------------------------------------------------------------ | ------------- | ------------------------ | ---------------------------------------------------------------------------------- |
+| POST   | `/api/v1/tenants/:tenantId/orders/:orderId/pickup-credential`            | staf tenant   | `tenant.orders.handover` | Terbitkan/rotasi kode; plaintext hanya dikembalikan sekali di respons ini          |
+| POST   | `/api/v1/tenants/:tenantId/orders/:orderId/pickup-credential/revocation` | staf tenant   | `tenant.orders.handover` | Cabut kredensial aktif; `reason` wajib                                             |
+| POST   | `/api/v1/tenants/:tenantId/pickup/verification`                          | staf tenant   | `tenant.orders.handover` | Verifikasi kode tanpa efek samping                                                 |
+| POST   | `/api/v1/tenants/:tenantId/pickup/handovers`                             | staf tenant   | `tenant.orders.handover` | Serah terima: order `completed`, reservasi `consumed`, kredensial `consumed`       |
+| GET    | `/api/v1/orders/:orderId/pickup-credential`                              | buyer pemilik | sesi buyer               | Baca ulang kode aktif miliknya (didekripsi server-side, `Cache-Control: no-store`) |
 
 Semua rute memakai `AuthGuard`. Dua rute yang menerima kode dari pengguna memakai `PickupRateLimitInterceptor` (Redis sliding window, namespace `antriin:pickup:rate:code`, kunci per (IP, tenant, actor), 10 percobaan **gagal** / 300 detik) dan **fail-closed** bila Redis tidak tersedia.
 
@@ -34,7 +34,7 @@ Semua rute memakai `AuthGuard`. Dua rute yang menerima kode dari pengguna memaka
 
 ## Keputusan dan batasan
 
-- **Plaintext hanya di respons penerbitan**; pemilik boleh membaca ulang lewat `GET /v1/orders/:orderId/pickup-credential` karena kode adalah tiket miliknya sendiri. Staf tidak pernah dapat membaca ulang kode, hanya memverifikasi.
+- **Plaintext hanya di respons penerbitan**; pemilik boleh membaca ulang lewat `GET /api/v1/orders/:orderId/pickup-credential` karena kode adalah tiket miliknya sendiri. Staf tidak pernah dapat membaca ulang kode, hanya memverifikasi.
 - **Tanpa kolom penghitung percobaan di DB**: brute force ditahan di lapisan Redis (keputusan D12 butir 10) oleh `PickupRateLimitInterceptor`. Bucket dikunci per **(IP klien, tenant, actor)** — bukan IP saja — dan hanya **percobaan gagal** yang menambah counter: verifikasi/handover yang sukses tidak boleh menghabiskan kuota operasional. Kuota pilot: 10 percobaan gagal per 5 menit per kunci; kelebihan -> `429 pickup_rate_limited` dengan `retry_after`. Bila Redis tidak tersedia, verifikasi **menolak** (`503 pickup_rate_limit_unavailable`), bukan meloloskan.
 - **Deployment ber-proxy wajib menyalakan `trustProxy`** pada adapter Fastify. Tanpa itu, semua klien di belakang proxy berbagi satu alamat IP sehingga bucket rate limit tercampur (temuan review R3-01). Nilai ini milik `src/main.ts` dan dikonfigurasi saat deployment, bukan oleh modul pickup.
 - **Rotasi `AUTH_SECRET` mematikan SEMUA kode aktif**: `code_hash` diturunkan dari secret itu, sehingga kode lama tidak lagi cocok dan pemilik tidak dapat membaca ulang (ciphertext masih dapat didekripsi selama `AUTH_ENCRYPTION_KEY` tetap). Rotasi kunci adalah pekerjaan operasional: terbitkan ulang kredensial untuk order yang masih berjalan.

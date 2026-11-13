@@ -79,7 +79,7 @@ describe('Availability HTTP contract', () => {
     app = module.createNestApplication<NestFastifyApplication>(
       new FastifyAdapter(),
     );
-    app.setGlobalPrefix('v1');
+    app.setGlobalPrefix('api/v1');
     app.useGlobalPipes(
       new ValidationPipe({
         whitelist: true,
@@ -101,11 +101,11 @@ describe('Availability HTTP contract', () => {
     const routes: [string, string, object?][] = [
       [
         'GET',
-        `/v1/tenants/${tenantId}/availability/slots?from=2026-11-13&to=2026-11-14`,
+        `/api/v1/tenants/${tenantId}/availability/slots?from=2026-11-13&to=2026-11-14`,
       ],
       [
         'POST',
-        `/v1/tenants/${tenantId}/availability/slots`,
+        `/api/v1/tenants/${tenantId}/availability/slots`,
         {
           startsAt: '2026-11-13T03:00:00Z',
           endsAt: '2026-11-13T04:00:00Z',
@@ -114,7 +114,7 @@ describe('Availability HTTP contract', () => {
       ],
       [
         'PATCH',
-        `/v1/tenants/${tenantId}/availability/slots/${slotId}`,
+        `/api/v1/tenants/${tenantId}/availability/slots/${slotId}`,
         { status: 'closed', expectedVersion: 1, reason: 'Bahan habis' },
       ],
     ];
@@ -129,7 +129,7 @@ describe('Availability HTTP contract', () => {
 
     const publicList = await app.inject({
       method: 'GET',
-      url: `/v1/tenants/${tenantId}/availability?date=2026-11-13`,
+      url: `/api/v1/tenants/${tenantId}/availability?date=2026-11-13`,
     });
     assert.equal(publicList.statusCode, 200);
     assert.equal(calls.at(-1)?.method, 'listAvailability');
@@ -138,7 +138,7 @@ describe('Availability HTTP contract', () => {
   it('validates the buyer range query at the edge', async () => {
     const ok = await app.inject({
       method: 'GET',
-      url: `/v1/tenants/${tenantId}/availability?date=2026-11-13`,
+      url: `/api/v1/tenants/${tenantId}/availability?date=2026-11-13`,
     });
     assert.equal(ok.statusCode, 200);
     const call = calls.at(-1);
@@ -150,38 +150,38 @@ describe('Availability HTTP contract', () => {
 
     const badDate = await app.inject({
       method: 'GET',
-      url: `/v1/tenants/${tenantId}/availability?date=13-11-2026`,
+      url: `/api/v1/tenants/${tenantId}/availability?date=13-11-2026`,
     });
     assert.equal(badDate.statusCode, 400);
 
     const badFrom = await app.inject({
       method: 'GET',
-      url: `/v1/tenants/${tenantId}/availability?from=2026-13-45&to=2026-11-14`,
+      url: `/api/v1/tenants/${tenantId}/availability?from=2026-13-45&to=2026-11-14`,
     });
     assert.equal(badFrom.statusCode, 400);
 
     const unknownParam = await app.inject({
       method: 'GET',
-      url: `/v1/tenants/${tenantId}/availability?date=2026-11-13&campusId=x`,
+      url: `/api/v1/tenants/${tenantId}/availability?date=2026-11-13&campusId=x`,
     });
     assert.equal(unknownParam.statusCode, 400);
 
     const badTenant = await app.inject({
       method: 'GET',
-      url: '/v1/tenants/not-a-uuid/availability?date=2026-11-13',
+      url: '/api/v1/tenants/not-a-uuid/availability?date=2026-11-13',
     });
     assert.equal(badTenant.statusCode, 400);
 
     const missingRange = await app.inject({
       method: 'GET',
-      url: `/v1/tenants/${tenantId}/availability/slots`,
+      url: `/api/v1/tenants/${tenantId}/availability/slots`,
       headers: auth,
     });
     assert.equal(missingRange.statusCode, 400, 'from/to are required');
   });
 
   it('validates slot write DTOs (window, capacity, reason) at the edge', async () => {
-    const url = `/v1/tenants/${tenantId}/availability/slots`;
+    const url = `/api/v1/tenants/${tenantId}/availability/slots`;
     const validBody = {
       startsAt: '2026-11-13T03:00:00Z',
       endsAt: '2026-11-13T04:00:00Z',
@@ -248,7 +248,7 @@ describe('Availability HTTP contract', () => {
   it('passes the session principal and coerced DTO into the service', async () => {
     const created = await app.inject({
       method: 'POST',
-      url: `/v1/tenants/${tenantId}/availability/slots`,
+      url: `/api/v1/tenants/${tenantId}/availability/slots`,
       headers: auth,
       payload: {
         startsAt: '2026-11-13T03:00:00Z',
@@ -274,7 +274,7 @@ describe('Availability HTTP contract', () => {
 
     const patched = await app.inject({
       method: 'PATCH',
-      url: `/v1/tenants/${tenantId}/availability/slots/${slotId}`,
+      url: `/api/v1/tenants/${tenantId}/availability/slots/${slotId}`,
       headers: auth,
       payload: { capacity: '4', expectedVersion: '2' },
     });
@@ -292,7 +292,7 @@ describe('Availability HTTP contract', () => {
 
     const managed = await app.inject({
       method: 'GET',
-      url: `/v1/tenants/${tenantId}/availability/slots?from=2026-11-13&to=2026-11-20`,
+      url: `/api/v1/tenants/${tenantId}/availability/slots?from=2026-11-13&to=2026-11-20`,
       headers: auth,
     });
     assert.equal(managed.statusCode, 200);
@@ -311,7 +311,7 @@ describe('Availability HTTP contract', () => {
       Promise.reject(new ForbiddenException('Tenant permission denied'));
     const forbidden = await app.inject({
       method: 'GET',
-      url: `/v1/tenants/${tenantId}/availability/slots?from=2026-11-13&to=2026-11-14`,
+      url: `/api/v1/tenants/${tenantId}/availability/slots?from=2026-11-13&to=2026-11-14`,
       headers: auth,
     });
     assert.equal(forbidden.statusCode, 403);
@@ -320,7 +320,7 @@ describe('Availability HTTP contract', () => {
       Promise.reject(new ForbiddenException('Tenant access denied'));
     const forbiddenCreate = await app.inject({
       method: 'POST',
-      url: `/v1/tenants/${tenantId}/availability/slots`,
+      url: `/api/v1/tenants/${tenantId}/availability/slots`,
       headers: auth,
       payload: {
         startsAt: '2026-11-13T03:00:00Z',
@@ -335,7 +335,7 @@ describe('Availability HTTP contract', () => {
       Promise.reject(new NotFoundException('Pickup slot not found'));
     const notFound = await app.inject({
       method: 'PATCH',
-      url: `/v1/tenants/${tenantId}/availability/slots/${slotId}`,
+      url: `/api/v1/tenants/${tenantId}/availability/slots/${slotId}`,
       headers: auth,
       payload: { status: 'closed', expectedVersion: 1, reason: 'Ditutup' },
     });
@@ -345,7 +345,7 @@ describe('Availability HTTP contract', () => {
       Promise.reject(new NotFoundException('Tenant not found'));
     const tenantNotFound = await app.inject({
       method: 'GET',
-      url: `/v1/tenants/${tenantId}/availability?date=2026-11-13`,
+      url: `/api/v1/tenants/${tenantId}/availability?date=2026-11-13`,
     });
     assert.equal(tenantNotFound.statusCode, 404);
 
@@ -354,7 +354,7 @@ describe('Availability HTTP contract', () => {
       Promise.reject(new BadRequestException('endsAt must be after startsAt'));
     const badWindow = await app.inject({
       method: 'POST',
-      url: `/v1/tenants/${tenantId}/availability/slots`,
+      url: `/api/v1/tenants/${tenantId}/availability/slots`,
       headers: auth,
       payload: {
         startsAt: '2026-11-13T04:00:00Z',
@@ -372,7 +372,7 @@ describe('Availability HTTP contract', () => {
       );
     const missingReason = await app.inject({
       method: 'PATCH',
-      url: `/v1/tenants/${tenantId}/availability/slots/${slotId}`,
+      url: `/api/v1/tenants/${tenantId}/availability/slots/${slotId}`,
       headers: auth,
       payload: { status: 'closed', expectedVersion: 1 },
     });
@@ -417,7 +417,7 @@ describe('Availability HTTP contract', () => {
       if (name === 'duplicateWindow') {
         const response = await app.inject({
           method: 'POST',
-          url: `/v1/tenants/${tenantId}/availability/slots`,
+          url: `/api/v1/tenants/${tenantId}/availability/slots`,
           headers: auth,
           payload: {
             startsAt: '2026-11-13T03:00:00Z',
@@ -429,7 +429,7 @@ describe('Availability HTTP contract', () => {
       } else {
         const response = await app.inject({
           method: 'PATCH',
-          url: `/v1/tenants/${tenantId}/availability/slots/${slotId}`,
+          url: `/api/v1/tenants/${tenantId}/availability/slots/${slotId}`,
           headers: auth,
           payload: { capacity: 1, expectedVersion: 1, reason: 'Kurangi' },
         });

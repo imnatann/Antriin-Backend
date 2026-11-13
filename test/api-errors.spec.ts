@@ -45,7 +45,7 @@ describe('Safe API error contract', () => {
     app = module.createNestApplication<NestFastifyApplication>(
       new FastifyAdapter(),
     );
-    app.setGlobalPrefix('v1');
+    app.setGlobalPrefix('api/v1');
     app.useGlobalFilters(new ApiExceptionFilter());
     await app.init();
     await app.getHttpAdapter().getInstance().ready();
@@ -56,7 +56,7 @@ describe('Safe API error contract', () => {
   it('does not leak internal errors and correlates the response', async () => {
     const response = await app.inject({
       method: 'GET',
-      url: '/v1/errors/private',
+      url: '/api/v1/errors/private',
     });
     assert.equal(response.statusCode, 500);
     assert.equal(response.body.includes('private-database'), false);
@@ -69,7 +69,7 @@ describe('Safe API error contract', () => {
   it('retains safe validation details with a stable code', async () => {
     const response = await app.inject({
       method: 'GET',
-      url: '/v1/errors/validation',
+      url: '/api/v1/errors/validation',
     });
     assert.equal(response.statusCode, 400);
     assert.equal(response.json().error.code, 'VALIDATION_ERROR');
@@ -80,7 +80,7 @@ describe('Safe API error contract', () => {
   it('preserves domain codes and provides bounded retry instructions', async () => {
     const response = await app.inject({
       method: 'GET',
-      url: '/v1/errors/rate',
+      url: '/api/v1/errors/rate',
     });
     assert.equal(response.statusCode, 429);
     assert.equal(response.json().error.code, 'otp_locked');

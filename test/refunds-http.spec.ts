@@ -94,8 +94,8 @@ describe('Refunds HTTP contract', () => {
   let stub: StubRefundsService;
 
   const auth = { authorization: 'Bearer test-token' };
-  const buyerUrl = `/v1/orders/${ORDER_ID}/refund`;
-  const campusRefundsUrl = `/v1/campuses/${CAMPUS_ID}/refunds`;
+  const buyerUrl = `/api/v1/orders/${ORDER_ID}/refund`;
+  const campusRefundsUrl = `/api/v1/campuses/${CAMPUS_ID}/refunds`;
 
   beforeEach(async () => {
     stub = new StubRefundsService();
@@ -125,7 +125,7 @@ describe('Refunds HTTP contract', () => {
     app = module.createNestApplication<NestFastifyApplication>(
       new FastifyAdapter(),
     );
-    app.setGlobalPrefix('v1');
+    app.setGlobalPrefix('api/v1');
     app.useGlobalPipes(
       new ValidationPipe({
         whitelist: true,
@@ -318,8 +318,8 @@ describe('Refunds HTTP contract', () => {
     }
     // Non-UUID path parameters never reach the service.
     for (const url of [
-      '/v1/orders/not-a-uuid/refund',
-      '/v1/campuses/not-a-uuid/refunds',
+      '/api/v1/orders/not-a-uuid/refund',
+      '/api/v1/campuses/not-a-uuid/refunds',
     ]) {
       const response = await app.inject({ method: 'GET', url, headers: auth });
       assert.equal(response.statusCode, 400, url);

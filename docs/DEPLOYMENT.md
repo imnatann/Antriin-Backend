@@ -4,13 +4,13 @@ Auto-deploy ke satu host pilot. Workflow: [.github/workflows/deploy.yml](../.git
 
 ## Alur
 
-1. Push ke `main` → [ci.yml](../.github/workflows/ci.yml) menjalankan typecheck, lint, format, migrasi, seluruh tes pada PostgreSQL 17 + Redis 7 nyata, build, dan probe `/v1/health/ready`.
+1. Push ke `main` → [ci.yml](../.github/workflows/ci.yml) menjalankan typecheck, lint, format, migrasi, seluruh tes pada PostgreSQL 17 + Redis 7 nyata, build, dan probe `/api/v1/health/ready`.
 2. Bila CI **sukses**, `deploy.yml` terpicu lewat `workflow_run`.
 3. Job `build` membangun dua image dan push ke GHCR:
    - `ghcr.io/<owner>/antriin-backend:<sha>` (target `runtime`)
    - `ghcr.io/<owner>/antriin-backend:<sha>-migrator` (target `migrator`, membawa `drizzle-kit` yang merupakan devDependency)
 4. Job `deploy` menyalin [compose.yaml](compose.yaml) dan [remote-deploy.sh](remote-deploy.sh) ke `/opt/antriin`, lalu menjalankan:
-   pull image → `docker compose up -d postgres redis` → `docker compose run --rm migrate` → `up -d api worker` → tunggu `/v1/health/ready` → verifikasi endpoint publik.
+   pull image → `docker compose up -d postgres redis` → `docker compose run --rm migrate` → `up -d api worker` → tunggu `/api/v1/health/ready` → verifikasi endpoint publik.
 5. Bila readiness gagal, script **rollback** ke image sebelumnya (`docker inspect` pada `antriin-api-1`) lalu keluar dengan status gagal.
 
 Deploy tidak pernah berjalan paralel (`concurrency: deploy-production`, `cancel-in-progress: false`) supaya stack tidak tertinggal setengah jadi.
@@ -58,11 +58,11 @@ IMAGE=ghcr.io/<owner>/antriin-backend TAG=<sha> bash remote-deploy.sh
 
 ## Endpoint
 
-| Path               | Kegunaan                              |
-| ------------------ | ------------------------------------- |
-| `/v1/health/live`  | proses hidup                          |
-| `/v1/health/ready` | PostgreSQL + Redis terjangkau         |
-| `/docs`            | Swagger (aktif via `SWAGGER_ENABLED`) |
+| Path                   | Kegunaan                              |
+| ---------------------- | ------------------------------------- |
+| `/api/v1/health/live`  | proses hidup                          |
+| `/api/v1/health/ready` | PostgreSQL + Redis terjangkau         |
+| `/docs`                | Swagger (aktif via `SWAGGER_ENABLED`) |
 
 API di-bind ke `0.0.0.0:3000` lewat `API_BIND_ADDRESS`.
 
@@ -77,8 +77,8 @@ Deploy pertama berjalan end-to-end dan diverifikasi dari internet publik:
 | Image berjalan                | `ghcr.io/imnatann/antriin-backend:2520c1ec66f7`                                                |
 | `antriin-api-1`               | Up, healthy                                                                                    |
 | `antriin-worker-1`            | Up, worker started                                                                             |
-| `GET /v1/health/live`         | 200, status ok                                                                                 |
-| `GET /v1/health/ready`        | 200, database & redis true                                                                     |
+| `GET /api/v1/health/live`     | 200, status ok                                                                                 |
+| `GET /api/v1/health/ready`    | 200, database & redis true                                                                     |
 | `GET /docs`                   | 200, Swagger                                                                                   |
 | Migrasi `0000..0009`          | diterapkan service `migrate` sebelum restart                                                   |
 

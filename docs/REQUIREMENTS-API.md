@@ -320,7 +320,7 @@ Diagram menunjukkan hubungan konseptual; ledger double-entry memiliki akun inter
 
 ## 8. Peta resource dan endpoint API (usulan)
 
-Gunakan REST berversi (mis. `/v1`); response konsisten `{data, meta}` atau `{error:{code,message,details,request_id}}`. Daftar ini kontrak awal, bukan keputusan transport final.
+Gunakan REST berversi (mis. `/api/v1`); response konsisten `{data, meta}` atau `{error:{code,message,details,request_id}}`. Daftar ini kontrak awal, bukan keputusan transport final.
 
 | Domain | Endpoint inti yang perlu disediakan |
 |---|---|
@@ -408,7 +408,7 @@ Stack ini disepakati untuk implementasi API Antriin. Mulai dengan **modular mono
 | Akses database | Drizzle ORM + driver PostgreSQL | Definisikan skema TypeScript dan migrasi SQL yang dapat direview. Gunakan SQL eksplisit saat dibutuhkan untuk locking, constraints dan query finansial; review SQL hasil migrasi sebelum deployment. |
 | Antrean pekerjaan | BullMQ + Redis | Notifikasi, retry integrasi, expiry proposal/reservation dan rekonsiliasi. Worker harus idempotent dan dapat melanjutkan pekerjaan setelah restart. |
 | Cache/rate limit | Redis | Cache data yang dapat dibangun ulang dan rate limit terpusat. Saldo wallet, ledger dan kapasitas final tetap divalidasi di PostgreSQL. Pisahkan kebijakan eviction cache dari Redis untuk antrean pekerjaan. |
-| Kontrak API | REST JSON + OpenAPI/Swagger | Endpoint berversi `/v1`; dokumentasikan request/response, autentikasi, error code, pagination, permission dan idempotency. |
+| Kontrak API | REST JSON + OpenAPI/Swagger | Endpoint berversi `/api/v1`; dokumentasikan request/response, autentikasi, error code, pagination, permission dan idempotency. |
 | Packaging/deployment | Docker | Build reproducible; jalankan API dan worker secara terpisah; konfigurasi/secrets dari environment atau secrets manager. |
 
 ### 14.1 Pembagian modul

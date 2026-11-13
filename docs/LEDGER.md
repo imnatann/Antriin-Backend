@@ -280,7 +280,7 @@ digits; no money value is converted to JavaScript `number`.
 - Each transaction stores actor type/id, reason, safe metadata, request hash,
   and reference. Posting also writes a minimal `ledger.transfer.posted` outbox
   record in the same transaction; it contains only transaction ID and currency.
-- `GET /v1/me/wallet` and `GET /v1/me/wallet/transactions` are authenticated,
+- `GET /api/v1/me/wallet` and `GET /api/v1/me/wallet/transactions` are authenticated,
   user-scoped reads, with IDR as the pilot wallet currency. A read does not
   create an account; an existing user with no IDR account sees a zero balance,
   while an unknown user is rejected. Cursor paging is bounded to 100 records.

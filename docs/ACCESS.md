@@ -20,9 +20,9 @@ The Drizzle definitions are in `src/database/schema/access.ts`. The root integra
 
 `AccessModule` exports `AccessService` for domain modules and workers. The HTTP surface is scoped to:
 
-- `GET /v1/tenants/{tenantId}/staff` — list staff membership IDs, roles, explicit permissions, and status.
-- `POST /v1/tenants/{tenantId}/staff` — grant a kitchen or pickup membership.
-- `PUT /v1/tenants/{tenantId}/staff/{subjectUserId}` — update that staff membership's role and permissions.
-- `DELETE /v1/tenants/{tenantId}/staff/{subjectUserId}` — revoke it immediately; a reason is required in the body.
+- `GET /api/v1/tenants/{tenantId}/staff` — list staff membership IDs, roles, explicit permissions, and status.
+- `POST /api/v1/tenants/{tenantId}/staff` — grant a kitchen or pickup membership.
+- `PUT /api/v1/tenants/{tenantId}/staff/{subjectUserId}` — update that staff membership's role and permissions.
+- `DELETE /api/v1/tenants/{tenantId}/staff/{subjectUserId}` — revoke it immediately; a reason is required in the body.
 
 Each route uses the auth guard and validates request DTOs at runtime. The controller derives the actor from the authenticated principal and returns no staff PII. Campus provisioning remains a controlled operation, with no public campus access-management endpoint.

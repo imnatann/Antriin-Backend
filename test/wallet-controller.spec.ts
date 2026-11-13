@@ -87,7 +87,7 @@ describe('Wallet HTTP contract', () => {
     app = module.createNestApplication<NestFastifyApplication>(
       new FastifyAdapter(),
     );
-    app.setGlobalPrefix('v1');
+    app.setGlobalPrefix('api/v1');
     app.useGlobalPipes(
       new ValidationPipe({
         whitelist: true,
@@ -106,13 +106,13 @@ describe('Wallet HTTP contract', () => {
   it('requires authentication and returns only the current user balances', async () => {
     const unauthorized = await app.inject({
       method: 'GET',
-      url: '/v1/me/wallet?currency=IDR',
+      url: '/api/v1/me/wallet?currency=IDR',
     });
     assert.equal(unauthorized.statusCode, 401);
 
     const response = await app.inject({
       method: 'GET',
-      url: '/v1/me/wallet',
+      url: '/api/v1/me/wallet',
       headers: { authorization: 'Bearer test-token' },
     });
     assert.equal(response.statusCode, 200);
@@ -123,13 +123,13 @@ describe('Wallet HTTP contract', () => {
 
     const unsupported = await app.inject({
       method: 'GET',
-      url: '/v1/me/wallet?currency=USD',
+      url: '/api/v1/me/wallet?currency=USD',
       headers: { authorization: 'Bearer test-token' },
     });
     assert.equal(unsupported.statusCode, 400);
     const clientScope = await app.inject({
       method: 'GET',
-      url: `/v1/me/wallet?currency=IDR&userId=${randomUUID()}`,
+      url: `/api/v1/me/wallet?currency=IDR&userId=${randomUUID()}`,
       headers: { authorization: 'Bearer test-token' },
     });
     assert.equal(clientScope.statusCode, 400);
@@ -138,7 +138,7 @@ describe('Wallet HTTP contract', () => {
     authenticatedUserId = 'c1c5ca3a-2e6f-4dd6-b107-58902a962be7';
     const unknownUser = await app.inject({
       method: 'GET',
-      url: '/v1/me/wallet',
+      url: '/api/v1/me/wallet',
       headers: { authorization: 'Bearer test-token' },
     });
     assert.equal(unknownUser.statusCode, 404);
@@ -148,7 +148,7 @@ describe('Wallet HTTP contract', () => {
   it('validates bounded cursor query and returns a cursor page', async () => {
     const response = await app.inject({
       method: 'GET',
-      url: '/v1/me/wallet/transactions?currency=IDR&limit=10&cursor=Y3Vyc29y',
+      url: '/api/v1/me/wallet/transactions?currency=IDR&limit=10&cursor=Y3Vyc29y',
       headers: { authorization: 'Bearer test-token' },
     });
     assert.equal(response.statusCode, 200);
@@ -161,7 +161,7 @@ describe('Wallet HTTP contract', () => {
 
     const invalid = await app.inject({
       method: 'GET',
-      url: '/v1/me/wallet/transactions?limit=101',
+      url: '/api/v1/me/wallet/transactions?limit=101',
       headers: { authorization: 'Bearer test-token' },
     });
     assert.equal(invalid.statusCode, 400);
@@ -171,7 +171,7 @@ describe('Wallet HTTP contract', () => {
   it('does not expose a client route for arbitrary wallet mutations', async () => {
     const response = await app.inject({
       method: 'POST',
-      url: '/v1/me/wallet',
+      url: '/api/v1/me/wallet',
       headers: { authorization: 'Bearer test-token' },
       payload: { amountMinor: '100000', direction: 'credit' },
     });

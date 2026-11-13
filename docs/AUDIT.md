@@ -4,6 +4,6 @@
 
 Audit append-only dilindungi trigger PostgreSQL dari update, delete dan truncate. Rollback domain juga membatalkan audit; jangan menulis audit keberhasilan sesudah transaksi domain terpisah. Ledger sendiri mempertahankan aktor/alasan immutable dan perubahan membership mempertahankan `access_audit_events`; keduanya bukan pengganti audit keputusan bisnis yang baru.
 
-`GET /v1/campuses/:campusId/audit` memerlukan bearer dan permission `campus.audit.read` pada kampus itu. Hasil menggabungkan audit umum lingkup kampus/tenant serta audit membership kampus/tenant terkait, dengan cursor UUID dan limit maksimum 100. Audit wallet pribadi tidak otomatis terlihat oleh pengelola kampus. Endpoint ini tidak memberikan hak mengubah akses atau uang.
+`GET /api/v1/campuses/:campusId/audit` memerlukan bearer dan permission `campus.audit.read` pada kampus itu. Hasil menggabungkan audit umum lingkup kampus/tenant serta audit membership kampus/tenant terkait, dengan cursor UUID dan limit maksimum 100. Audit wallet pribadi tidak otomatis terlihat oleh pengelola kampus. Endpoint ini tidak memberikan hak mengubah akses atau uang.
 
 Jejak hanya ada untuk aksi yang telah memanggil service audit atau audit domain terkait. Modul bisnis yang masih scaffold tidak menghasilkan jejak audit rekaan; tiap implementasi baru wajib menambahkan audit atomik pada aksi kritisnya. Pemantauan/retensi eksternal dan praktik backup/restore production tetap pekerjaan operasional terpisah.

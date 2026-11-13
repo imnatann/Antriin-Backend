@@ -26,7 +26,7 @@ ditransmisikan sebagai **string desimal** di JSON. Perbandingan memakai `BigInt`
 
 ### Buyer (AuthGuard, principal `{userId}`)
 
-- `POST /v1/me/wallet/topups` — buat (atau replay idempoten) intent top-up sandbox.
+- `POST /api/v1/me/wallet/topups` — buat (atau replay idempoten) intent top-up sandbox.
   - Body: `{ amountMinor: string, idempotencyKey: string }`. Field tak dikenal ditolak (whitelist + forbidNonWhitelisted global).
   - `amountMinor` pola `^(0|[1-9][0-9]*)$`, wajib dalam `[MIN, MAX]` (selain itu `400 TOPUP_AMOUNT_OUT_OF_BOUNDS` / `TOPUP_AMOUNT_INVALID`).
   - `idempotencyKey` pola `^[A-Za-z0-9_.:-]{8,200}$`, unik per user.
@@ -35,14 +35,14 @@ ditransmisikan sebagai **string desimal** di JSON. Perbandingan memakai `BigInt`
   - Replay kunci sama + payload sama -> mengembalikan intent yang sama (`replayed:true`) tanpa baris baru.
     Kunci sama + amount beda -> `409 TOPUP_IDEMPOTENCY_KEY_REUSED`. Insert bersamaan masih berjalan -> `409 TOPUP_IDEMPOTENCY_IN_PROGRESS` (retry klien aman).
   - `201` body `{ data: { id, provider, providerReference, amountMinor, currency, status, statusVersion, createdAt, updatedAt, expiresAt, succeededAt, qrisPayload, replayed } }`.
-- `GET /v1/me/wallet/topups` — daftar intent milik pemanggil (cursor pagination `?limit&cursor`, `created_at desc, id desc`). Tidak membocorkan milik user lain.
-- `GET /v1/me/wallet/topups/:id` — detail satu intent; intent milik user lain -> `404` (tidak dapat dibedakan dari tidak ada).
+- `GET /api/v1/me/wallet/topups` — daftar intent milik pemanggil (cursor pagination `?limit&cursor`, `created_at desc, id desc`). Tidak membocorkan milik user lain.
+- `GET /api/v1/me/wallet/topups/:id` — detail satu intent; intent milik user lain -> `404` (tidak dapat dibedakan dari tidak ada).
 
 `qrisPayload` adalah string QRIS **tiruan** deterministik (prefix `ANTRIIN-QRIS-SANDBOX-v1|...`) yang hanya dihasilkan saat mode `sandbox` dan status `pending`.
 
 ### Webhook provider (server-to-server, HMAC — tanpa bearer)
 
-- `POST /v1/webhooks/payments/:provider` — hanya `provider = 'sandbox'` (selain itu `404 WEBHOOK_PROVIDER_UNSUPPORTED`). `@HttpCode(200)`.
+- `POST /api/v1/webhooks/payments/:provider` — hanya `provider = 'sandbox'` (selain itu `404 WEBHOOK_PROVIDER_UNSUPPORTED`). `@HttpCode(200)`.
   - Header: `x-antriin-signature` (HMAC-SHA256 hex) dan `x-antriin-timestamp` (unix seconds), **terpisah**.
   - Signature dihitung atas string `timestamp + '.' + exactRawBody` dengan `PAYMENTS_SANDBOX_WEBHOOK_SECRET`.
   - Verifikasi (`src/modules/payments/webhook-signature.ts`):

@@ -14,7 +14,7 @@ Panduan ini berlaku untuk seluruh repository `Antriin-Backend`. Baca sebelum men
 - Node.js **24 LTS**, npm, TypeScript strict, NestJS dengan Fastify adapter.
 - PostgreSQL sebagai sumber kebenaran transaksi; Drizzle ORM dan migrasi SQL.
 - Redis untuk antrean/cache/rate limit; BullMQ untuk background jobs.
-- REST JSON dengan prefix `/v1`, OpenAPI/Swagger, logging JSON melalui Pino.
+- REST JSON dengan prefix `/api/v1`, OpenAPI/Swagger, logging JSON melalui Pino.
 - Arsitektur modular monolith; API dan worker berjalan sebagai proses/container terpisah.
 - `src/modules/<domain>/`: controller, DTO, service dan aturan domain terkait.
 - `src/database/`: koneksi PostgreSQL, schema Drizzle dan akses database bersama.
@@ -25,7 +25,7 @@ Panduan ini berlaku untuk seluruh repository `Antriin-Backend`. Baca sebelum men
 
 ## Status fondasi
 
-Fondasi health telah dilengkapi implementasi OTP/sesi melalui port delivery, verifikasi kampus terpisah, permission granular/membership, wallet/ledger double-entry, audit immutable, serta outbox/notifikasi dalam aplikasi. Adapter OTP default menolak pengiriman; pengiriman eksternal dan uang nyata belum aktif. Order, katalog/availability, top-up/refund, settlement/payout, review/risk dan reporting masih dikerjakan bertahap; jangan menganggap modul scaffold sebagai fitur selesai. Lihat status dan bukti terbaru pada `docs/BACKEND-BACKLOG.md`; keputusan pilot yang didelegasikan pengguna ada di `docs/PILOT-POLICY.md`.
+Fondasi health telah dilengkapi implementasi OTP/sesi melalui port delivery, verifikasi kampus terpisah, permission granular/membership, wallet/ledger double-entry, audit immutable, serta outbox/notifikasi dalam aplikasi. Adapter OTP default menolak pengiriman; pengiriman eksternal dan uang nyata belum aktif. Order, katalog/availability, pickup, top-up/refund, settlement/payout dan ulasan sudah diimplementasikan; risk dan profil `/me` masih scaffold — jangan menganggap modul scaffold sebagai fitur selesai. Lihat status dan bukti terbaru pada `docs/BACKEND-BACKLOG.md`; keputusan pilot yang didelegasikan pengguna ada di `docs/PILOT-POLICY.md`.
 
 ## Cara mengerjakan perubahan
 
@@ -88,7 +88,7 @@ npm run start:dev
 npm run start:worker:dev
 ```
 
-Port default lokal: API `3000`, PostgreSQL `5433`, Redis `6380`. Swagger `/docs` aktif bila `SWAGGER_ENABLED=true`. `GET /v1/health/live` mengecek proses; `GET /v1/health/ready` mengecek koneksi DB dan Redis, mengembalikan `503` bila dependency tidak tersedia.
+Port default lokal: API `3000`, PostgreSQL `5433`, Redis `6380`. Swagger `/docs` aktif bila `SWAGGER_ENABLED=true`. `GET /api/v1/health/live` mengecek proses; `GET /api/v1/health/ready` mengecek koneksi DB dan Redis, mengembalikan `503` bila dependency tidak tersedia.
 
 Untuk perubahan kode, jalankan pemeriksaan yang relevan:
 

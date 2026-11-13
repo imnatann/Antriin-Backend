@@ -21,6 +21,7 @@ import { RiskModule } from './modules/risk/risk.module';
 import { NotificationsModule } from './modules/notifications/notifications.module';
 import { AuditModule } from './modules/audit/audit.module';
 import { ReportingModule } from './modules/reporting/reporting.module';
+import { ApiGuideModule } from './modules/api-guide/api-guide.module';
 @Module({
   imports: [
     CoreModule,
@@ -45,6 +46,7 @@ import { ReportingModule } from './modules/reporting/reporting.module';
     NotificationsModule,
     AuditModule,
     ReportingModule,
+    ApiGuideModule,
   ],
 })
 export class AppModule {}

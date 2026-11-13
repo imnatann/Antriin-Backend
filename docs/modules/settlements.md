@@ -17,10 +17,10 @@ Aturan yang dipegang (AGENTS.md, docs/PILOT-POLICY.md):
 
 ## Endpoint
 
-| Method | Path                                         | Permission            | Catatan                                       |
-| ------ | -------------------------------------------- | --------------------- | --------------------------------------------- |
-| GET    | `/v1/tenants/:tenantId/finance/summary`      | `tenant.finance.read` | ringkasan turunan (bukan kolom saldo)         |
-| GET    | `/v1/tenants/:tenantId/finance/transactions` | `tenant.finance.read` | feed ledger akun payable/hold, cursor + limit |
+| Method | Path                                             | Permission            | Catatan                                       |
+| ------ | ------------------------------------------------ | --------------------- | --------------------------------------------- |
+| GET    | `/api/v1/tenants/:tenantId/finance/summary`      | `tenant.finance.read` | ringkasan turunan (bukan kolom saldo)         |
+| GET    | `/api/v1/tenants/:tenantId/finance/transactions` | `tenant.finance.read` | feed ledger akun payable/hold, cursor + limit |
 
 Semua route memerlukan bearer token (`AuthGuard`) dan memakai `tenantId` dari **path** (bukan body).
 `AccessService.requireTenant` menolak semua role selain `owner`, dan owner wajib
@@ -33,7 +33,7 @@ UTC dari database (D7), bukan hasil `Date.toISOString()`.
 
 ### Ringkasan keuangan
 
-`GET /v1/tenants/:tenantId/finance/summary` mengembalikan `{ data: { ... } }`:
+`GET /api/v1/tenants/:tenantId/finance/summary` mengembalikan `{ data: { ... } }`:
 
 | Field             | Sumber                                                                  |
 | ----------------- | ----------------------------------------------------------------------- |
@@ -50,7 +50,7 @@ Akun yang belum ada dibaca sebagai `0`; modul ini **tidak** membuat akun pada ja
 
 ### Feed transaksi
 
-`GET /v1/tenants/:tenantId/finance/transactions?cursor=&limit=` mengembalikan
+`GET /api/v1/tenants/:tenantId/finance/transactions?cursor=&limit=` mengembalikan
 `{ data: [...], meta: { next_cursor } }`. Satu baris = satu `ledger_entries` pada akun payable/hold
 tenant, dengan `type` diturunkan dari `reference_namespace`:
 `settlement_release`, `payout_hold`, `payout_settle`, `payout_release`, atau `other`.
@@ -233,13 +233,13 @@ terverifikasi), 404/403 dari access untuk tenant lain.
 
 ### Ditunda: pemantauan kampus (F9)
 
-`GET /v1/campuses/:campusId/settlements` (`campus.transactions.read`, desain §7) **belum dibuat**.
+`GET /api/v1/campuses/:campusId/settlements` (`campus.transactions.read`, desain §7) **belum dibuat**.
 Alasannya: permintaan review F9 hanya mewajibkan endpoint pemantauan payout, dan menambah endpoint
 kedua memperluas permukaan baca lintas modul (ringkasan settlement per kampus butuh agregasi
 `settlements` + `orders` + `payout_allocations` yang belum punya kontrak). Status penundaan ini
 dicatat eksplisit di sini dan di [payouts.md](payouts.md); route **tidak** didaftarkan, sehingga
 request ke path itu menghasilkan 404 (bukan 200 kosong). Yang sudah ada: pemantauan payout kampus
-`GET /v1/campuses/:campusId/payouts` (`campus.payouts.read`, read-only, tersamarkan).
+`GET /api/v1/campuses/:campusId/payouts` (`campus.payouts.read`, read-only, tersamarkan).
 
 ## Pengujian
 

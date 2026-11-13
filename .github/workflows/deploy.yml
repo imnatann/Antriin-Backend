@@ -156,7 +156,7 @@ jobs:
         run: |
           set -euo pipefail
           for attempt in $(seq 1 15); do
-            if curl --fail --silent --max-time 5 "http://$DEPLOY_HOST:$APP_PORT/v1/health/ready"; then
+            if curl --fail --silent --max-time 5 "http://$DEPLOY_HOST:$APP_PORT/api/v1/health/ready"; then
               echo
               echo "public endpoint healthy"
               exit 0

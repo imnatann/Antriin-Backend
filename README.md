@@ -18,10 +18,19 @@ npm run start:dev
 
 Pada setup awal `.env` sudah dibuat secara lokal. Jangan menimpa jika sudah disesuaikan. Kredensial Compose adalah contoh development lokal; gunakan secret terpisah untuk deployment.
 
-Buka Swagger di http://localhost:3000/docs. API memakai prefix `/v1`:
+Semua endpoint memakai prefix `/api/v1`. Bila `SWAGGER_ENABLED=true`:
 
-- `GET /v1/health/live`: proses API hidup, tanpa memerlukan database/Redis.
-- `GET /v1/health/ready`: `200` hanya bila PostgreSQL dan Redis dapat diakses; `503` bila dependency belum siap. Tidak mengecek status migrasi.
+- http://localhost:3000/docs — Swagger UI.
+- http://localhost:3000/api/v1/guide — **panduan API lengkap** (HTML) untuk implementasi frontend: konvensi, role/permission, state machine, seluruh endpoint beserta parameter/body/respons, dan daftar object.
+- http://localhost:3000/api/v1/guide.md — panduan yang sama dalam Markdown (mudah dibaca/di-commit oleh agent AI).
+- http://localhost:3000/api/v1/guide/openapi.json — dokumen OpenAPI mentah.
+
+Halaman panduan dibangun saat request dari dokumen OpenAPI yang sedang berjalan, jadi endpoint dan object di dalamnya tidak bisa menyimpang dari kode. Bagian konvensi dan alur ditulis manual di `src/modules/api-guide/api-guide.content.ts`.
+
+Endpoint kesehatan:
+
+- `GET /api/v1/health/live`: proses API hidup, tanpa memerlukan database/Redis.
+- `GET /api/v1/health/ready`: `200` hanya bila PostgreSQL dan Redis dapat diakses; `503` bila dependency belum siap. Tidak mengecek status migrasi.
 
 Di terminal lain, jalankan worker:
 
@@ -71,15 +80,16 @@ src/
   infrastructure/     Klien Redis dan lifecycle
   jobs/               Konfigurasi BullMQ dan worker maintenance
   modules/            Modul domain sesuai requirements
+    api-guide/        Halaman panduan API untuk agent frontend (/api/v1/guide)
   app.module.ts       Komposisi API
   main.ts             HTTP bootstrap
   worker.module.ts    Komposisi worker
   worker.ts           Worker bootstrap
 ```
 
-Implementasi tersedia untuk [OTP/sesi dan verifikasi kampus](docs/AUTH.md), [permission dan staf tenant](docs/ACCESS.md), [wallet/ledger](docs/LEDGER.md), [outbox/notifikasi dalam aplikasi](docs/OUTBOX.md), serta [audit kampus](docs/AUDIT.md). Bearer opaque diperiksa terhadap sesi dan status user di PostgreSQL. Adapter OTP default mengembalikan 503; pengujian auth memakai port delivery terkontrol, bukan WhatsApp/email nyata. Wallet publik hanya membaca saldo/transaksi milik sesi; tidak ada endpoint kredit/debit bebas.
+Implementasi tersedia untuk [OTP/sesi dan verifikasi kampus](docs/AUTH.md), [permission dan staf tenant](docs/ACCESS.md), [wallet/ledger](docs/LEDGER.md), [outbox/notifikasi dalam aplikasi](docs/OUTBOX.md), [audit kampus](docs/AUDIT.md), [ulasan pembeli dan moderasi kampus](docs/modules/reviews.md), [laporan penjualan dan dashboard kampus](docs/modules/reporting.md), serta [panduan API untuk agent frontend](docs/modules/api-guide.md). Bearer opaque diperiksa terhadap sesi dan status user di PostgreSQL. Adapter OTP default mengembalikan 503; pengujian auth memakai port delivery terkontrol, bukan WhatsApp/email nyata. Wallet publik hanya membaca saldo/transaksi milik sesi; tidak ada endpoint kredit/debit bebas.
 
-Katalog/availability, order, top-up/refund, settlement/payout, review/risk dan reporting masih bertahap, belum dinyatakan siap. Worker menerima `maintenance/healthcheck` serta `domain-events/deliver` untuk notifikasi dalam aplikasi; belum memproses uang/pesanan atau mengirim pesan eksternal. Status implementasi dan bukti checkpoint ada pada [backlog backend](docs/BACKEND-BACKLOG.md).
+Katalog/availability, order, pickup, top-up/refund, settlement/payout, ulasan serta reporting baca-saja sudah diimplementasikan dan diuji terhadap PostgreSQL. Risk dan profil `/me` masih scaffold. Worker menerima `maintenance/healthcheck`, `domain-events/deliver` untuk notifikasi dalam aplikasi, serta antrean permintaan pembayaran/refund/payout; seluruh provider tetap sandbox/stub dan belum ada pesan eksternal yang terkirim. Status implementasi dan bukti checkpoint ada pada [backlog backend](docs/BACKEND-BACKLOG.md).
 
 Log menggunakan JSON Pino dengan redaksi authorization/cookie. Jangan menambahkan OTP, token, payload provider atau data rekening mentah ke log. Request ID log disediakan Pino; ledger dan outbox memiliki deduplikasi/idempotency masing-masing, dan mutasi domain berikutnya tetap harus menjaga idempotency pada operasinya sendiri.
 

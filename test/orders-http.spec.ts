@@ -82,7 +82,7 @@ describe('Orders HTTP contract', () => {
     app = module.createNestApplication<NestFastifyApplication>(
       new FastifyAdapter(),
     );
-    app.setGlobalPrefix('v1');
+    app.setGlobalPrefix('api/v1');
     app.useGlobalPipes(
       new ValidationPipe({
         whitelist: true,
@@ -110,7 +110,7 @@ describe('Orders HTTP contract', () => {
   it('requires an Idempotency-Key header for checkout', async () => {
     const response = await app.inject({
       method: 'POST',
-      url: '/v1/orders',
+      url: '/api/v1/orders',
       headers: auth,
       payload: validCart,
     });
@@ -128,7 +128,7 @@ describe('Orders HTTP contract', () => {
     ]) {
       const response = await app.inject({
         method: 'POST',
-        url: '/v1/orders',
+        url: '/api/v1/orders',
         headers: { ...auth, 'idempotency-key': 'checkout-key-123456' },
         payload: { ...validCart, ...extra },
       });
@@ -141,7 +141,7 @@ describe('Orders HTTP contract', () => {
     // The same applies inside a cart line.
     const lineExtra = await app.inject({
       method: 'POST',
-      url: '/v1/orders',
+      url: '/api/v1/orders',
       headers: { ...auth, 'idempotency-key': 'checkout-key-123456' },
       payload: {
         ...validCart,
@@ -164,7 +164,7 @@ describe('Orders HTTP contract', () => {
     ]) {
       const response = await app.inject({
         method: 'POST',
-        url: '/v1/orders',
+        url: '/api/v1/orders',
         headers: { ...auth, 'idempotency-key': 'checkout-key-123456' },
         payload,
       });
@@ -172,7 +172,7 @@ describe('Orders HTTP contract', () => {
     }
     const shortKey = await app.inject({
       method: 'POST',
-      url: '/v1/orders',
+      url: '/api/v1/orders',
       headers: { ...auth, 'idempotency-key': 'short' },
       payload: validCart,
     });
@@ -183,7 +183,7 @@ describe('Orders HTTP contract', () => {
   it('passes the header and body to the service and returns 201', async () => {
     const response = await app.inject({
       method: 'POST',
-      url: '/v1/orders',
+      url: '/api/v1/orders',
       headers: { ...auth, 'idempotency-key': 'checkout-key-123456' },
       payload: validCart,
     });
@@ -204,12 +204,12 @@ describe('Orders HTTP contract', () => {
 
   it('requires a bearer token on every orders route', async () => {
     const routes: { method: 'GET' | 'POST'; url: string }[] = [
-      { method: 'GET', url: '/v1/orders' },
-      { method: 'GET', url: '/v1/orders/' + orderId },
-      { method: 'GET', url: '/v1/tenants/' + tenantId + '/orders' },
+      { method: 'GET', url: '/api/v1/orders' },
+      { method: 'GET', url: '/api/v1/orders/' + orderId },
+      { method: 'GET', url: '/api/v1/tenants/' + tenantId + '/orders' },
       {
         method: 'POST',
-        url: '/v1/tenants/' + tenantId + '/orders/' + orderId + '/confirm',
+        url: '/api/v1/tenants/' + tenantId + '/orders/' + orderId + '/confirm',
       },
     ];
     for (const route of routes) {
@@ -225,7 +225,7 @@ describe('Orders HTTP contract', () => {
   it('requires a reason to decline and validates the decision value', async () => {
     const noReason = await app.inject({
       method: 'POST',
-      url: '/v1/tenants/' + tenantId + '/orders/' + orderId + '/decline',
+      url: '/api/v1/tenants/' + tenantId + '/orders/' + orderId + '/decline',
       headers: auth,
       payload: {},
     });
@@ -233,7 +233,7 @@ describe('Orders HTTP contract', () => {
 
     const blankReason = await app.inject({
       method: 'POST',
-      url: '/v1/tenants/' + tenantId + '/orders/' + orderId + '/decline',
+      url: '/api/v1/tenants/' + tenantId + '/orders/' + orderId + '/decline',
       headers: auth,
       payload: { reason: '' },
     });
@@ -241,7 +241,7 @@ describe('Orders HTTP contract', () => {
 
     const ok = await app.inject({
       method: 'POST',
-      url: '/v1/tenants/' + tenantId + '/orders/' + orderId + '/decline',
+      url: '/api/v1/tenants/' + tenantId + '/orders/' + orderId + '/decline',
       headers: auth,
       payload: { reason: 'Bahan habis' },
     });
@@ -256,7 +256,7 @@ describe('Orders HTTP contract', () => {
     const badDecision = await app.inject({
       method: 'POST',
       url:
-        '/v1/orders/' +
+        '/api/v1/orders/' +
         orderId +
         '/schedule-proposals/' +
         proposalId +
@@ -270,21 +270,21 @@ describe('Orders HTTP contract', () => {
   it('validates list query parameters and cursor shape', async () => {
     const badLimit = await app.inject({
       method: 'GET',
-      url: '/v1/orders?limit=1000',
+      url: '/api/v1/orders?limit=1000',
       headers: auth,
     });
     assert.equal(badLimit.statusCode, 400);
 
     const badStatus = await app.inject({
       method: 'GET',
-      url: '/v1/orders?status=awaiting_payment',
+      url: '/api/v1/orders?status=awaiting_payment',
       headers: auth,
     });
     assert.equal(badStatus.statusCode, 400);
 
     const ok = await app.inject({
       method: 'GET',
-      url: '/v1/orders?status=paid_awaiting_tenant&limit=10',
+      url: '/api/v1/orders?status=paid_awaiting_tenant&limit=10',
       headers: auth,
     });
     assert.equal(ok.statusCode, 200);
@@ -292,7 +292,7 @@ describe('Orders HTTP contract', () => {
 
     const tenantList = await app.inject({
       method: 'GET',
-      url: '/v1/tenants/' + tenantId + '/orders?limit=5',
+      url: '/api/v1/tenants/' + tenantId + '/orders?limit=5',
       headers: auth,
     });
     assert.equal(tenantList.statusCode, 200);
@@ -312,7 +312,7 @@ describe('Orders HTTP contract', () => {
     };
     const response = await app.inject({
       method: 'POST',
-      url: '/v1/orders',
+      url: '/api/v1/orders',
       headers: { ...auth, 'idempotency-key': 'checkout-key-123456' },
       payload: validCart,
     });
@@ -326,7 +326,7 @@ describe('Orders HTTP contract', () => {
   it('rejects a non-uuid order id before reaching the service', async () => {
     const response = await app.inject({
       method: 'GET',
-      url: '/v1/orders/not-a-uuid',
+      url: '/api/v1/orders/not-a-uuid',
       headers: auth,
     });
     assert.equal(response.statusCode, 400);

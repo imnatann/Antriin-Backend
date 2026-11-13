@@ -45,29 +45,29 @@ total_minor       = subtotal_minor   (pilot tanpa fee/pajak/diskon — PILOT-POL
 
 ### Discovery pembeli (publik, tanpa auth)
 
-- `GET /v1/tenants/:tenantId/menu` — kategori aktif + item + grup/choice aktif, nested. Hanya status `active` dan `sold_out` (buyer melihat ketersediaan; `archived` tidak pernah bocor). Filter: `status=active|sold_out`, `search` (substring nama item, case-insensitive, metakarakter LIKE di-escape sehingga literal), `categoryId`. Kategori tanpa item cocok tidak ditampilkan. Cap 200 item + `meta.truncated`. Tenant archived atau kampus inactive → 404.
-- `GET /v1/tenants/:tenantId/menu/items/:itemId` — detail item buyer-visible (404 bila archived/kategori archived/tenant lain).
+- `GET /api/v1/tenants/:tenantId/menu` — kategori aktif + item + grup/choice aktif, nested. Hanya status `active` dan `sold_out` (buyer melihat ketersediaan; `archived` tidak pernah bocor). Filter: `status=active|sold_out`, `search` (substring nama item, case-insensitive, metakarakter LIKE di-escape sehingga literal), `categoryId`. Kategori tanpa item cocok tidak ditampilkan. Cap 200 item + `meta.truncated`. Tenant archived atau kampus inactive → 404.
+- `GET /api/v1/tenants/:tenantId/menu/items/:itemId` — detail item buyer-visible (404 bila archived/kategori archived/tenant lain).
 - Membaca menu tidak mensyaratkan tenant `open` (paused/closed tetap bisa dilihat; checkout yang menolak), sesuai requirement 3.2.
 
 ## Endpoint
 
-| Method | Path                                                                | Auth   | Permission           |
-| ------ | ------------------------------------------------------------------- | ------ | -------------------- |
-| GET    | `/v1/tenants/:tenantId/menu`                                        | publik | —                    |
-| GET    | `/v1/tenants/:tenantId/menu/items/:itemId`                          | publik | —                    |
-| GET    | `/v1/tenants/:tenantId/menu/manage`                                 | bearer | `tenant.menu.manage` |
-| POST   | `/v1/tenants/:tenantId/menu/categories`                             | bearer | `tenant.menu.manage` |
-| PATCH  | `/v1/tenants/:tenantId/menu/categories/:categoryId`                 | bearer | `tenant.menu.manage` |
-| DELETE | `/v1/tenants/:tenantId/menu/categories/:categoryId?reason=` (arsip) | bearer | `tenant.menu.manage` |
-| POST   | `/v1/tenants/:tenantId/menu/items`                                  | bearer | `tenant.menu.manage` |
-| PATCH  | `/v1/tenants/:tenantId/menu/items/:itemId`                          | bearer | `tenant.menu.manage` |
-| DELETE | `/v1/tenants/:tenantId/menu/items/:itemId?reason=` (arsip)          | bearer | `tenant.menu.manage` |
-| POST   | `/v1/tenants/:tenantId/menu/items/:itemId/option-groups`            | bearer | `tenant.menu.manage` |
-| PATCH  | `/v1/tenants/:tenantId/menu/option-groups/:groupId`                 | bearer | `tenant.menu.manage` |
-| DELETE | `/v1/tenants/:tenantId/menu/option-groups/:groupId?reason=` (arsip) | bearer | `tenant.menu.manage` |
-| POST   | `/v1/tenants/:tenantId/menu/option-groups/:groupId/choices`         | bearer | `tenant.menu.manage` |
-| PATCH  | `/v1/tenants/:tenantId/menu/choices/:choiceId`                      | bearer | `tenant.menu.manage` |
-| DELETE | `/v1/tenants/:tenantId/menu/choices/:choiceId?reason=` (arsip)      | bearer | `tenant.menu.manage` |
+| Method | Path                                                                    | Auth   | Permission           |
+| ------ | ----------------------------------------------------------------------- | ------ | -------------------- |
+| GET    | `/api/v1/tenants/:tenantId/menu`                                        | publik | —                    |
+| GET    | `/api/v1/tenants/:tenantId/menu/items/:itemId`                          | publik | —                    |
+| GET    | `/api/v1/tenants/:tenantId/menu/manage`                                 | bearer | `tenant.menu.manage` |
+| POST   | `/api/v1/tenants/:tenantId/menu/categories`                             | bearer | `tenant.menu.manage` |
+| PATCH  | `/api/v1/tenants/:tenantId/menu/categories/:categoryId`                 | bearer | `tenant.menu.manage` |
+| DELETE | `/api/v1/tenants/:tenantId/menu/categories/:categoryId?reason=` (arsip) | bearer | `tenant.menu.manage` |
+| POST   | `/api/v1/tenants/:tenantId/menu/items`                                  | bearer | `tenant.menu.manage` |
+| PATCH  | `/api/v1/tenants/:tenantId/menu/items/:itemId`                          | bearer | `tenant.menu.manage` |
+| DELETE | `/api/v1/tenants/:tenantId/menu/items/:itemId?reason=` (arsip)          | bearer | `tenant.menu.manage` |
+| POST   | `/api/v1/tenants/:tenantId/menu/items/:itemId/option-groups`            | bearer | `tenant.menu.manage` |
+| PATCH  | `/api/v1/tenants/:tenantId/menu/option-groups/:groupId`                 | bearer | `tenant.menu.manage` |
+| DELETE | `/api/v1/tenants/:tenantId/menu/option-groups/:groupId?reason=` (arsip) | bearer | `tenant.menu.manage` |
+| POST   | `/api/v1/tenants/:tenantId/menu/option-groups/:groupId/choices`         | bearer | `tenant.menu.manage` |
+| PATCH  | `/api/v1/tenants/:tenantId/menu/choices/:choiceId`                      | bearer | `tenant.menu.manage` |
+| DELETE | `/api/v1/tenants/:tenantId/menu/choices/:choiceId?reason=` (arsip)      | bearer | `tenant.menu.manage` |
 
 Semua endpoint punya decorator Swagger/OpenAPI; body divalidasi runtime oleh `ValidationPipe` global (`whitelist`, `forbidNonWhitelisted`, `transform`) dan divalidasi ulang di service (defense in depth untuk pemanggil internal). Error mengikuti `ApiExceptionFilter` (`VALIDATION_ERROR` 400, `FORBIDDEN` 403, `NOT_FOUND` 404, `CONFLICT` 409). Pemetaan error PostgreSQL pada jalur mutasi (review R2-02, tidak boleh jadi 500 opaque): unique `23505` → 409 (pesan per resource); FK `23503` → 409 `REFERENCE_CONFLICT`; CHECK `23514` → 400 `CHECK_CONSTRAINT_VIOLATION`; deadlock `40P01` → **503 `DATABASE_DEADLOCK`** retryable (header `retry-after: 1`) karena kontensi tulis transien. Data harga korup di DB (mustahil lewat CHECK) → 500 `Menu price data is corrupt` (R2-09), bukan 409.
 

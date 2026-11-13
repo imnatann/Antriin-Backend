@@ -537,7 +537,7 @@ Catatan integrasi:
 
 ## 7. Endpoint HTTP usulan [USULAN]
 
-Prefix `/v1`, timestamp mikrodetik DB (D7), uang string desimal, `Idempotency-Key` wajib untuk
+Prefix `/api/v1`, timestamp mikrodetik DB (D7), uang string desimal, `Idempotency-Key` wajib untuk
 mutasi finansial (REQUIREMENTS §8).
 
 | Method | Path                                          | Permission                   | Catatan                                                        |

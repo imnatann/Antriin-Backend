@@ -73,8 +73,8 @@ describe('Settlements HTTP contract', () => {
   let stub: StubSettlementsService;
 
   const auth = { authorization: 'Bearer test-token' };
-  const summaryUrl = `/v1/tenants/${TENANT_ID}/finance/summary`;
-  const transactionsUrl = `/v1/tenants/${TENANT_ID}/finance/transactions`;
+  const summaryUrl = `/api/v1/tenants/${TENANT_ID}/finance/summary`;
+  const transactionsUrl = `/api/v1/tenants/${TENANT_ID}/finance/transactions`;
 
   beforeEach(async () => {
     stub = new StubSettlementsService();
@@ -104,7 +104,7 @@ describe('Settlements HTTP contract', () => {
     app = module.createNestApplication<NestFastifyApplication>(
       new FastifyAdapter(),
     );
-    app.setGlobalPrefix('v1');
+    app.setGlobalPrefix('api/v1');
     app.useGlobalPipes(
       new ValidationPipe({
         whitelist: true,
@@ -203,7 +203,7 @@ describe('Settlements HTTP contract', () => {
   it('rejects a malformed tenant id before the service runs', async () => {
     const response = await app.inject({
       method: 'GET',
-      url: '/v1/tenants/not-a-uuid/finance/summary',
+      url: '/api/v1/tenants/not-a-uuid/finance/summary',
       headers: auth,
     });
     assert.equal(response.statusCode, 400);

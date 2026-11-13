@@ -45,37 +45,37 @@ Aturan: override tanggal mengalahkan jadwal weekly; baris `is_open=false`/`is_cl
 
 ### Publik (tanpa auth) — discovery
 
-| Method | Path                                    | Keterangan                                                                                                                                                |
-| ------ | --------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| GET    | `/v1/campuses`                          | Daftar kampus **aktif**; `?search=` substring nama case-insensitive (wildcard LIKE di-escape), `?limit=` 1..100 (default 50, di-clamp server).            |
-| GET    | `/v1/campuses/:campusId`                | Detail kampus aktif. Kampus nonaktif/tidak ada → `404` (tidak membocorkan eksistensi).                                                                    |
-| GET    | `/v1/campuses/:campusId/tenants`        | Tenant non-archived di kampus aktif; `?status=open\|closed\|paused\|any` (default **open**). Kampus nonaktif → `404`. `meta` berisi nama/timezone kampus. |
-| GET    | `/v1/tenants`                           | Daftar tenant non-archived lintas kampus aktif; filter `?campusId=`, `?status=` (default `any`), `?search=`, `?limit=`.                                   |
-| GET    | `/v1/tenants/:tenantId`                 | Detail tenant (id, campusId, campusName, name, location, status, timezone). Archived / kampus nonaktif → `404`.                                           |
-| GET    | `/v1/tenants/:tenantId/operating-hours` | Jadwal weekly (urut weekday) + override dari **hari lokal tenant** onwards (maks 90 baris).                                                               |
+| Method | Path                                        | Keterangan                                                                                                                                                |
+| ------ | ------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| GET    | `/api/v1/campuses`                          | Daftar kampus **aktif**; `?search=` substring nama case-insensitive (wildcard LIKE di-escape), `?limit=` 1..100 (default 50, di-clamp server).            |
+| GET    | `/api/v1/campuses/:campusId`                | Detail kampus aktif. Kampus nonaktif/tidak ada → `404` (tidak membocorkan eksistensi).                                                                    |
+| GET    | `/api/v1/campuses/:campusId/tenants`        | Tenant non-archived di kampus aktif; `?status=open\|closed\|paused\|any` (default **open**). Kampus nonaktif → `404`. `meta` berisi nama/timezone kampus. |
+| GET    | `/api/v1/tenants`                           | Daftar tenant non-archived lintas kampus aktif; filter `?campusId=`, `?status=` (default `any`), `?search=`, `?limit=`.                                   |
+| GET    | `/api/v1/tenants/:tenantId`                 | Detail tenant (id, campusId, campusName, name, location, status, timezone). Archived / kampus nonaktif → `404`.                                           |
+| GET    | `/api/v1/tenants/:tenantId/operating-hours` | Jadwal weekly (urut weekday) + override dari **hari lokal tenant** onwards (maks 90 baris).                                                               |
 
 Data tenant `archived` tidak pernah muncul di endpoint publik mana pun; tenant archived juga ditolak `AccessService.requireTenant` sehingga staf lama kehilangan akses.
 
 ### Staf tenant (Bearer; permission granular per aksi)
 
-| Method | Path                                                         | Permission                                                                           | Keterangan                                                                                                                                                                                                                                                                     |
-| ------ | ------------------------------------------------------------ | ------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| PATCH  | `/v1/tenants/:tenantId/status`                               | `tenant.orders.pause` untuk `paused`; `tenant.capacity.manage` untuk `open`/`closed` | Transisi operasional (pengganti `PATCH /tenants/:id/availability/status` WIP lama). Body `{status, reason, expectedUpdatedAt}`. Audit `tenant.status_changed` (metadata `from`,`to`,`via:tenant_staff`).                                                                       |
-| PUT    | `/v1/tenants/:tenantId/operating-hours`                      | `tenant.capacity.manage`                                                             | Ganti **seluruh** jadwal weekly: tepat 7 entri, tiap weekday 0..6 sekali. `isOpen=true` wajib `opensAt<closesAt`; `isOpen=false` wajib tanpa waktu. Body `{days[], reason}`. Audit `tenant.operating_hours_replaced`.                                                          |
-| PUT    | `/v1/tenants/:tenantId/operating-hours/overrides/:localDate` | `tenant.capacity.manage`                                                             | Upsert override satu tanggal lokal (unik per tenant+tanggal). `isClosed=true` XOR jendela waktu. Tanggal lampau (menurut timezone tenant) ditolak `400`. `reason` (1..300) disimpan sebagai catatan publik sekaligus reason audit. Audit `tenant.operating_hour_override_set`. |
-| DELETE | `/v1/tenants/:tenantId/operating-hours/overrides/:localDate` | `tenant.capacity.manage`                                                             | Hapus override (kembali ke weekly). Body `{reason}`. Tidak ada → `404`. Audit `tenant.operating_hour_override_removed`.                                                                                                                                                        |
+| Method | Path                                                             | Permission                                                                           | Keterangan                                                                                                                                                                                                                                                                     |
+| ------ | ---------------------------------------------------------------- | ------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| PATCH  | `/api/v1/tenants/:tenantId/status`                               | `tenant.orders.pause` untuk `paused`; `tenant.capacity.manage` untuk `open`/`closed` | Transisi operasional (pengganti `PATCH /tenants/:id/availability/status` WIP lama). Body `{status, reason, expectedUpdatedAt}`. Audit `tenant.status_changed` (metadata `from`,`to`,`via:tenant_staff`).                                                                       |
+| PUT    | `/api/v1/tenants/:tenantId/operating-hours`                      | `tenant.capacity.manage`                                                             | Ganti **seluruh** jadwal weekly: tepat 7 entri, tiap weekday 0..6 sekali. `isOpen=true` wajib `opensAt<closesAt`; `isOpen=false` wajib tanpa waktu. Body `{days[], reason}`. Audit `tenant.operating_hours_replaced`.                                                          |
+| PUT    | `/api/v1/tenants/:tenantId/operating-hours/overrides/:localDate` | `tenant.capacity.manage`                                                             | Upsert override satu tanggal lokal (unik per tenant+tanggal). `isClosed=true` XOR jendela waktu. Tanggal lampau (menurut timezone tenant) ditolak `400`. `reason` (1..300) disimpan sebagai catatan publik sekaligus reason audit. Audit `tenant.operating_hour_override_set`. |
+| DELETE | `/api/v1/tenants/:tenantId/operating-hours/overrides/:localDate` | `tenant.capacity.manage`                                                             | Hapus override (kembali ke weekly). Body `{reason}`. Tidak ada → `404`. Audit `tenant.operating_hour_override_removed`.                                                                                                                                                        |
 
 Semua mutasi jam operasional mengunci baris tenant (`SELECT ... FOR UPDATE`) sehingga serial terhadap validasi slot yang mengunci tenant dengan `FOR SHARE`.
 
 ### Campus admin (Bearer; permission granular)
 
-| Method | Path                                              | Permission              | Keterangan                                                                                                                                                          |
-| ------ | ------------------------------------------------- | ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| POST   | `/v1/campuses/:campusId/tenants`                  | `campus.tenants.manage` | Buat tenant baru, status awal selalu `closed` (keputusan konservatif: tenant dibuka eksplisit setelahnya). Body `{name, location, reason}`. Audit `tenant.created`. |
-| PATCH  | `/v1/campuses/:campusId/tenants/:tenantId`        | `campus.tenants.manage` | Ubah `name`/`location` dengan `expectedUpdatedAt` (D7). Audit `tenant.updated` + metadata `before{name,location}`.                                                  |
-| PUT    | `/v1/campuses/:campusId/tenants/:tenantId/status` | `campus.tenants.manage` | Transisi oversight `open/closed/paused` (bukan archive). Audit `tenant.status_changed` (`via:campus_admin`).                                                        |
-| DELETE | `/v1/campuses/:campusId/tenants/:tenantId`        | `campus.tenants.manage` | **Archive** (bukan hapus). Body `{reason, expectedUpdatedAt}`. Lihat aturan arsip. Audit `tenant.archived` + metadata `before.status`.                              |
-| POST   | `/v1/campuses/:campusId/tenants/:tenantId/owner`  | `campus.access.manage`  | Provisioning owner pertama. Body `{subjectUserId, reason}`. Lihat bagian provisioning.                                                                              |
+| Method | Path                                                  | Permission              | Keterangan                                                                                                                                                          |
+| ------ | ----------------------------------------------------- | ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| POST   | `/api/v1/campuses/:campusId/tenants`                  | `campus.tenants.manage` | Buat tenant baru, status awal selalu `closed` (keputusan konservatif: tenant dibuka eksplisit setelahnya). Body `{name, location, reason}`. Audit `tenant.created`. |
+| PATCH  | `/api/v1/campuses/:campusId/tenants/:tenantId`        | `campus.tenants.manage` | Ubah `name`/`location` dengan `expectedUpdatedAt` (D7). Audit `tenant.updated` + metadata `before{name,location}`.                                                  |
+| PUT    | `/api/v1/campuses/:campusId/tenants/:tenantId/status` | `campus.tenants.manage` | Transisi oversight `open/closed/paused` (bukan archive). Audit `tenant.status_changed` (`via:campus_admin`).                                                        |
+| DELETE | `/api/v1/campuses/:campusId/tenants/:tenantId`        | `campus.tenants.manage` | **Archive** (bukan hapus). Body `{reason, expectedUpdatedAt}`. Lihat aturan arsip. Audit `tenant.archived` + metadata `before.status`.                              |
+| POST   | `/api/v1/campuses/:campusId/tenants/:tenantId/owner`  | `campus.access.manage`  | Provisioning owner pertama. Body `{subjectUserId, reason}`. Lihat bagian provisioning.                                                                              |
 
 Tenant milik kampus lain lewat path kampus yang salah → `404 Tenant not found` (tidak membocorkan eksistensi); admin tanpa membership kampus tsb → `403 Campus access denied`; membership tanpa permission yang diminta → `403 Campus permission denied`. Tenant `archived` diperlakukan `404` di semua jalur admin.
 
@@ -110,7 +110,7 @@ Pemeriksaan dependensi berjalan dalam transaksi yang sama dengan penguncian bari
 
 ### Provisioning terkontrol (tanpa backdoor, tanpa token statis)
 
-**Owner tenant** — `POST /v1/campuses/:campusId/tenants/:tenantId/owner` (`campus.access.manage`):
+**Owner tenant** — `POST /api/v1/campuses/:campusId/tenants/:tenantId/owner` (`campus.access.manage`):
 
 - Hanya bootstrap **owner pertama**: ditolak `409` bila sudah ada owner aktif (transfer/multi-owner = keputusan produk terbuka, lihat batasan).
 - Aktor ≠ subjek (tidak bisa angkat diri sendiri); subjek harus user `active` (`404` bila tidak).
@@ -161,7 +161,7 @@ Poin 1–6 di bawah **disetujui root** (keputusan task-3, 12 November 2026); sis
 - **Transfer/multi owner tenant belum ada** (409 untuk owner kedua — disetujui root untuk pilot): endpoint provisioning hanya bootstrap owner pertama. Transfer owner dan unarchive tenant adalah **keputusan produk terbuka**.
 - **Belum ada endpoint revoke/pause campus membership via HTTP** (by design; service-only). Permintaan UI untuk manajemen akses kampus perlu keputusan root.
 - **Outbox event tenant DITUNDA root** (mis. `tenant.paused` di REQUIREMENTS-API §9): `DOMAIN_EVENT_TYPES` (file root) tidak boleh ditambah dari slice ini; perubahan status saat ini hanya tercatat di audit. Tercatat sebagai **usulan produk** bila event/notifikasi tenant diperlukan.
-- `GET /v1/campuses/:campusId/tenants` dan `GET /v1/tenants` belum berpaginasi cursor (hanya `limit` clamp 1..100) — cukup untuk volume pilot.
+- `GET /api/v1/campuses/:campusId/tenants` dan `GET /api/v1/tenants` belum berpaginasi cursor (hanya `limit` clamp 1..100) — cukup untuk volume pilot.
 
 ## Test
 

@@ -83,7 +83,7 @@ Slice availability mengubah penolakan database menjadi 409 dengan kode kontrak:
 ## 2. Idempotency
 
 - Header `Idempotency-Key` wajib (8..200 karakter `A-Z a-z 0-9 . _ :`), disimpan sebagai
-  `key_hash = sha256(key)` pada `order_request_idempotency(actor_user_id, route_name='POST /v1/orders', key_hash)`.
+  `key_hash = sha256(key)` pada `order_request_idempotency(actor_user_id, route_name='POST /api/v1/orders', key_hash)`.
 - `request_hash` = sha256 payload kanonik (tenantId, slotId, expectedSlotVersion, specialRequest,
   baris item terurut sebagai string: menuItemId, quantity, optionIds terurut, notes).
 - Perilaku:
@@ -138,24 +138,24 @@ Slice availability mengubah penolakan database menjadi 409 dengan kode kontrak:
 
 ## 5. Proposal jadwal (`schedule_proposals`)
 
-- `POST /v1/tenants/:tenantId/orders/:orderId/schedule-proposals` (permission
+- `POST /api/v1/tenants/:tenantId/orders/:orderId/schedule-proposals` (permission
   `tenant.orders.accept`): tenant mengajukan slot lain pada tenant yang sama.
   `expires_at = now() + ORDER_PROPOSAL_TTL_SECONDS` (default 600, bounds 60..3600).
   Slot tujuan divalidasi read-only (`assertBookableSlot`, tanpa reserve). Satu proposal pending
   per order (partial unique index) -> `409 SCHEDULE_PROPOSAL_PENDING`.
-- `POST /v1/orders/:orderId/schedule-proposals/:proposalId/decision` (buyer pemilik order):
+- `POST /api/v1/orders/:orderId/schedule-proposals/:proposalId/decision` (buyer pemilik order):
   - `accept` -> `moveReservation` + update `orders.pickup_slot_id/pickup_starts_at/pickup_ends_at`
     - `decided_at` + event `schedule_proposal.decided` + audit, semua atomik;
   - `reject` -> `decided_at`, status `rejected`, **slot tidak berubah**;
   - replay keputusan yang sama -> `meta.replayed = true`; keputusan berbeda -> 409.
 - **Expiry tidak pernah auto-accept**: tidak ada job. Status `expired` hanya ditandai saat
-  proposal dibaca (`GET /v1/orders/:id`, `GET /v1/tenants/:t/orders/:id`) atau saat keputusan
+  proposal dibaca (`GET /api/v1/orders/:id`, `GET /api/v1/tenants/:t/orders/:id`) atau saat keputusan
   dicoba dan `expires_at <= now()`. Expiry tidak memindahkan slot, tidak memulai produksi, tidak
   merefund. Keputusan atas proposal kedaluwarsa -> `409 SCHEDULE_PROPOSAL_EXPIRED`.
 - `decided_at` diisi tepat ketika status keluar dari `pending_buyer` (CHECK 0007), dan
   `expires_at > created_at` juga dijaga CHECK.
 
-## 6. Endpoint HTTP (prefix global /v1)
+## 6. Endpoint HTTP (prefix global /api/v1)
 
 | Method & path                                                   | Auth        | Permission                                          | Deskripsi                                                                                                                       |
 | --------------------------------------------------------------- | ----------- | --------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |

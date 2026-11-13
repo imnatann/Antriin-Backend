@@ -57,7 +57,7 @@ describe('Tenant staff access HTTP contract', () => {
     app = module.createNestApplication<NestFastifyApplication>(
       new FastifyAdapter(),
     );
-    app.setGlobalPrefix('v1');
+    app.setGlobalPrefix('api/v1');
     app.useGlobalPipes(
       new ValidationPipe({
         whitelist: true,
@@ -76,13 +76,13 @@ describe('Tenant staff access HTTP contract', () => {
   it('requires authenticated principal and returns staff data without PII', async () => {
     const denied = await app.inject({
       method: 'GET',
-      url: '/v1/tenants/6e7de3fd-dca1-4769-93dd-b22008b3aee9/staff',
+      url: '/api/v1/tenants/6e7de3fd-dca1-4769-93dd-b22008b3aee9/staff',
     });
     assert.equal(denied.statusCode, 401);
 
     const response = await app.inject({
       method: 'GET',
-      url: '/v1/tenants/6e7de3fd-dca1-4769-93dd-b22008b3aee9/staff',
+      url: '/api/v1/tenants/6e7de3fd-dca1-4769-93dd-b22008b3aee9/staff',
       headers: { 'x-test-user': 'owner-user-id' },
     });
     assert.equal(response.statusCode, 200);
@@ -105,7 +105,7 @@ describe('Tenant staff access HTTP contract', () => {
   it('grants only validated staff fields using the authenticated actor', async () => {
     const response = await app.inject({
       method: 'POST',
-      url: '/v1/tenants/6e7de3fd-dca1-4769-93dd-b22008b3aee9/staff',
+      url: '/api/v1/tenants/6e7de3fd-dca1-4769-93dd-b22008b3aee9/staff',
       headers: { 'x-test-user': 'owner-user-id' },
       payload: {
         subjectUserId: '72c23f61-4d05-4dd5-8b1c-c6d37e4228e8',
@@ -120,7 +120,7 @@ describe('Tenant staff access HTTP contract', () => {
 
     const valid = await app.inject({
       method: 'POST',
-      url: '/v1/tenants/6e7de3fd-dca1-4769-93dd-b22008b3aee9/staff',
+      url: '/api/v1/tenants/6e7de3fd-dca1-4769-93dd-b22008b3aee9/staff',
       headers: { 'x-test-user': 'owner-user-id' },
       payload: {
         subjectUserId: '72c23f61-4d05-4dd5-8b1c-c6d37e4228e8',
@@ -145,7 +145,7 @@ describe('Tenant staff access HTTP contract', () => {
   it('validates scoped revocation parameters and forwards the reason', async () => {
     const response = await app.inject({
       method: 'DELETE',
-      url: '/v1/tenants/6e7de3fd-dca1-4769-93dd-b22008b3aee9/staff/72c23f61-4d05-4dd5-8b1c-c6d37e4228e8',
+      url: '/api/v1/tenants/6e7de3fd-dca1-4769-93dd-b22008b3aee9/staff/72c23f61-4d05-4dd5-8b1c-c6d37e4228e8',
       headers: { 'x-test-user': 'owner-user-id' },
       payload: { reason: 'Staff contract ended' },
     });

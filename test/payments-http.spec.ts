@@ -106,7 +106,7 @@ describe(
     ) {
       return webhookApp.inject({
         method: 'POST',
-        url: '/v1/webhooks/payments/' + provider,
+        url: '/api/v1/webhooks/payments/' + provider,
         headers: {
           'content-type': 'application/json',
           'x-antriin-signature': sig,
@@ -145,7 +145,7 @@ describe(
         new FastifyAdapter(),
         { rawBody: true },
       );
-      webhookApp.setGlobalPrefix('v1');
+      webhookApp.setGlobalPrefix('api/v1');
       webhookApp.useGlobalFilters(new ApiExceptionFilter());
       webhookApp.useGlobalPipes(
         new ValidationPipe({
@@ -167,7 +167,7 @@ describe(
       buyerApp = buyerModule.createNestApplication<NestFastifyApplication>(
         new FastifyAdapter(),
       );
-      buyerApp.setGlobalPrefix('v1');
+      buyerApp.setGlobalPrefix('api/v1');
       buyerApp.useGlobalFilters(new ApiExceptionFilter());
       buyerApp.useGlobalPipes(
         new ValidationPipe({
@@ -264,7 +264,7 @@ describe(
     it('rejects missing signature headers', async () => {
       const res = await webhookApp.inject({
         method: 'POST',
-        url: '/v1/webhooks/payments/sandbox',
+        url: '/api/v1/webhooks/payments/sandbox',
         headers: { 'content-type': 'application/json' },
         payload: JSON.stringify({
           eventId: randomUUID(),
@@ -299,7 +299,7 @@ describe(
     it('requires authentication to create a top-up intent', async () => {
       const res = await buyerApp.inject({
         method: 'POST',
-        url: '/v1/me/wallet/topups',
+        url: '/api/v1/me/wallet/topups',
         headers: { 'content-type': 'application/json' },
         payload: JSON.stringify({
           amountMinor: '50000',
@@ -314,7 +314,7 @@ describe(
       const key = randomUUID();
       const ok = await buyerApp.inject({
         method: 'POST',
-        url: '/v1/me/wallet/topups',
+        url: '/api/v1/me/wallet/topups',
         headers: {
           authorization: 'Bearer test-token',
           'content-type': 'application/json',
@@ -328,7 +328,7 @@ describe(
       // a client cannot inject another user id / status (forbidNonWhitelisted)
       const injected = await buyerApp.inject({
         method: 'POST',
-        url: '/v1/me/wallet/topups',
+        url: '/api/v1/me/wallet/topups',
         headers: {
           authorization: 'Bearer test-token',
           'content-type': 'application/json',
@@ -357,7 +357,7 @@ describe(
       authenticatedUserId = userA;
       const list = await buyerApp.inject({
         method: 'GET',
-        url: '/v1/me/wallet/topups',
+        url: '/api/v1/me/wallet/topups',
         headers: { authorization: 'Bearer test-token' },
       });
       assert.equal(list.statusCode, 200);
@@ -370,7 +370,7 @@ describe(
       // detail of another user's intent is indistinguishable from missing
       const crossDetail = await buyerApp.inject({
         method: 'GET',
-        url: '/v1/me/wallet/topups/' + intentB.view.id,
+        url: '/api/v1/me/wallet/topups/' + intentB.view.id,
         headers: { authorization: 'Bearer test-token' },
       });
       assert.equal(crossDetail.statusCode, 404);
@@ -449,7 +449,7 @@ describe(
     it('rejects a malformed body with 400 even without signature headers (P2-02 order)', async () => {
       const res = await webhookApp.inject({
         method: 'POST',
-        url: '/v1/webhooks/payments/sandbox',
+        url: '/api/v1/webhooks/payments/sandbox',
         headers: { 'content-type': 'application/json' },
         payload: JSON.stringify({ garbage: true }),
       });
@@ -465,7 +465,7 @@ describe(
       });
       const credit = await buyerApp.inject({
         method: 'POST',
-        url: '/v1/me/wallet/topups/' + intent.view.id + '/credit',
+        url: '/api/v1/me/wallet/topups/' + intent.view.id + '/credit',
         headers: {
           authorization: 'Bearer test-token',
           'content-type': 'application/json',

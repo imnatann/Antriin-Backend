@@ -52,7 +52,7 @@ describe(
         switchToHttp: () => ({
           getRequest: () => ({
             ip: requestIp,
-            url: '/v1/auth/otp-challenges',
+            url: '/api/v1/auth/otp-challenges',
           }),
         }),
       } as unknown as ExecutionContext;
@@ -71,7 +71,7 @@ describe(
         switchToHttp: () => ({
           getRequest: () => ({
             ip: requestIp,
-            url: '/v1/auth/otp-challenges/id/verify',
+            url: '/api/v1/auth/otp-challenges/id/verify',
           }),
         }),
       } as unknown as ExecutionContext;

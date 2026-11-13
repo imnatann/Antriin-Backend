@@ -133,13 +133,13 @@ describe('Cases HTTP contract', () => {
   let stub: StubCasesService;
 
   const auth = { authorization: 'Bearer test-token' };
-  const buyerOpenUrl = `/v1/orders/${ORDER_ID}/cases`;
-  const buyerListUrl = '/v1/me/cases';
-  const buyerReadUrl = `/v1/me/cases/${CASE_ID}`;
-  const tenantOpenUrl = `/v1/tenants/${TENANT_ID}/cases`;
+  const buyerOpenUrl = `/api/v1/orders/${ORDER_ID}/cases`;
+  const buyerListUrl = '/api/v1/me/cases';
+  const buyerReadUrl = `/api/v1/me/cases/${CASE_ID}`;
+  const tenantOpenUrl = `/api/v1/tenants/${TENANT_ID}/cases`;
   const tenantListUrl = tenantOpenUrl;
   const tenantReadUrl = `${tenantOpenUrl}/${CASE_ID}`;
-  const campusOpenUrl = `/v1/campuses/${CAMPUS_ID}/cases`;
+  const campusOpenUrl = `/api/v1/campuses/${CAMPUS_ID}/cases`;
   const campusReadUrl = `${campusOpenUrl}/${CASE_ID}`;
   const decisionUrl = `${campusReadUrl}/decision`;
 
@@ -171,7 +171,7 @@ describe('Cases HTTP contract', () => {
     app = module.createNestApplication<NestFastifyApplication>(
       new FastifyAdapter(),
     );
-    app.setGlobalPrefix('v1');
+    app.setGlobalPrefix('api/v1');
     app.useGlobalPipes(
       new ValidationPipe({
         whitelist: true,
@@ -470,20 +470,20 @@ describe('Cases HTTP contract', () => {
     const malformedPaths: [string, string, object?][] = [
       [
         'POST',
-        '/v1/orders/not-a-uuid/cases',
+        '/api/v1/orders/not-a-uuid/cases',
         { category: 'other', subject: 'x' },
       ],
-      ['GET', '/v1/tenants/not-a-uuid/cases'],
-      ['GET', `/v1/campuses/not-a-uuid/cases/${CASE_ID}`],
+      ['GET', '/api/v1/tenants/not-a-uuid/cases'],
+      ['GET', `/api/v1/campuses/not-a-uuid/cases/${CASE_ID}`],
       [
         'POST',
-        `/v1/campuses/not-a-uuid/cases/${CASE_ID}/decision`,
+        `/api/v1/campuses/not-a-uuid/cases/${CASE_ID}/decision`,
         {
           status: 'resolved',
           reason: 'x',
         },
       ],
-      ['GET', '/v1/me/cases/not-a-uuid'],
+      ['GET', '/api/v1/me/cases/not-a-uuid'],
     ];
     for (const [method, url, payload] of malformedPaths) {
       const response = await app.inject({

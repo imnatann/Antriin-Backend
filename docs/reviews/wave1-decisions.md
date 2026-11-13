@@ -69,7 +69,7 @@ TenantsModule meng-export TenantOperatingHoursService.resolveOperatingWindow(ten
 
 ## D9 — Provisioning owner tenant dan campus admin
 
-- Owner tenant: POST /v1/campuses/:campusId/tenants/:tenantId/owner, guard campus.access.manage, HANYA bootstrap owner pertama (409 bila sudah ada owner aktif), actor != subject, subject user aktif, advisory lock sama dengan AccessService.grantTenantMembership, menulis tenant_memberships(role=owner, owner_verified_at=now()) + access_audit_events(grant) + audit_events.
+- Owner tenant: POST /api/v1/campuses/:campusId/tenants/:tenantId/owner, guard campus.access.manage, HANYA bootstrap owner pertama (409 bila sudah ada owner aktif), actor != subject, subject user aktif, advisory lock sama dengan AccessService.grantTenantMembership, menulis tenant_memberships(role=owner, owner_verified_at=now()) + access_audit_events(grant) + audit_events.
 - Campus admin: TIDAK ada endpoint publik (sesuai docs/ACCESS.md). CampusProvisioningService.provisionCampusAdmin({actor userId|service, campusId, subjectUserId, permissions, reason}) service-only untuk bootstrap terkontrol; actor user wajib punya campus.access.manage.
 - Keterbatasan skema yang diterima sementara: access_audit_events.actor_user_id dan membership_id NOT NULL, sehingga bootstrap dengan actor service tidak menulis access_audit_events. Kewajiban wave ini: bootstrap service-actor menulis audit_events (actor_service, scope campus, action + reason + target jelas). Keputusan terbuka root: apakah access_audit_events perlu kolom actor_service + check XOR pada migrasi berikutnya (menyentuh slice KAN-24 yang sudah diterima -> perlu review terpisah). Agent tidak boleh membuat migrasi.
 
@@ -164,7 +164,7 @@ Reviewer independen membuktikan dua kegagalan nyata pada rancangan checkout:
 2. Permission transisi status order: `confirmed`/`declined` = `tenant.orders.accept`; `preparing` = `tenant.orders.prepare`; `ready_for_pickup` = `tenant.orders.prepare` ATAU `tenant.orders.accept` (dicek berurutan); `completed` (handover) = `tenant.orders.handover`. Staf pickup tidak mendapat akses finance/bank/payout.
 3. Checkout menahan lock `FOR UPDATE` pada baris slot SEBELUM quote (`assertBookableSlot(..., 'update')`) sehingga tidak ada jalur lock-upgrade; quote sendiri memakai mode `none` (tanpa lock baris slot). Keduanya dipertahankan: pre-lock menjamin urutan deterministik, quote tetap advisory.
 4. Retry deadlock: maksimal SATU retry untuk SQLSTATE 40P01/40001, kegagalan kedua -> `409 CHECKOUT_RETRY_CONFLICT` (bukan 500). Retry hanya membungkus transaksi yang belum commit.
-5. Idempotency HTTP: header `Idempotency-Key` WAJIB pada `POST /v1/orders` (400 `IDEMPOTENCY_KEY_REQUIRED` bila tidak ada, 400 `IDEMPOTENCY_KEY_INVALID` bila bentuknya tidak sah: 8..200 karakter A-Z a-z 0-9 . _ :). Service memvalidasi ulang untuk pemanggil non-HTTP.
+5. Idempotency HTTP: header `Idempotency-Key` WAJIB pada `POST /api/v1/orders` (400 `IDEMPOTENCY_KEY_REQUIRED` bila tidak ada, 400 `IDEMPOTENCY_KEY_INVALID` bila bentuknya tidak sah: 8..200 karakter A-Z a-z 0-9 . _ :). Service memvalidasi ulang untuk pemanggil non-HTTP.
 6. Kontrak pickup (stabil, dipakai slice pickup):
    - `OrdersService.getOrderForHandover(client, tenantId, orderId)` -> `{ orderId, tenantId, buyerId, status, pickupSlotId, totalMinor, currency }`
    - `OrdersService.markHandedOver(client, tenantId, orderId, actorUserId)` -> `void` (validasi status `ready_for_pickup`, set `completed`+`completed_at`, `consumeReservation`, tulis `order_events` + audit; replay = no-op).

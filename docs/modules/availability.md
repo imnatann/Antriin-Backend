@@ -92,7 +92,7 @@ was released; create a new checkout` (R2-11); sudah `consumed` -> 409
   slot asal. Proposal acceptance (wave 2) memanggil method ini dalam transaksi
   keputusan proposal.
 
-## Endpoint HTTP (prefix global /v1)
+## Endpoint HTTP (prefix global /api/v1)
 
 | Method & path                                         | Auth        | Permission               | Deskripsi                                                                                                                                                                                                                                                                                                                                                                         |
 | ----------------------------------------------------- | ----------- | ------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -208,7 +208,7 @@ operasional (lock baris tenant) dan `lockTenantContext` di slice ini.
   catalog-http.spec: module test + override guard + ValidationPipe global;
   mencakup 401/403/400/404/409, DTO edge validation, koersi transform, dan
   principal dari sesi). Verifikasi boot DI (AppModule resolve +
-  /v1/health/ready 200) dilakukan via build sandbox .test-dist-availability*.
+  /api/v1/health/ready 200) dilakukan via build sandbox .test-dist-availability*.
 - Constructor `AvailabilityService` kini 4 dependensi: DatabaseService,
   AccessService, TenantOperatingHoursService (D8), AuditService (audit manajemen).
   Konsumen yang meng-instantiate manual (mis. test slice lain) perlu menyesuaikan

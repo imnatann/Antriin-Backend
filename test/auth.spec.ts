@@ -107,7 +107,7 @@ describe(
       app = module.createNestApplication<NestFastifyApplication>(
         new FastifyAdapter(),
       );
-      app.setGlobalPrefix('v1');
+      app.setGlobalPrefix('api/v1');
       app.useGlobalPipes(
         new ValidationPipe({
           whitelist: true,
@@ -169,7 +169,7 @@ describe(
       const destination = `login-${randomUUID()}@example.test`;
       const created = await app.inject({
         method: 'POST',
-        url: '/v1/auth/otp-challenges',
+        url: '/api/v1/auth/otp-challenges',
         payload: { channel: 'email', destination },
       });
       assert.equal(created.statusCode, 201);
@@ -180,7 +180,7 @@ describe(
       assert.ok(delivered);
       const verified = await app.inject({
         method: 'POST',
-        url: `/v1/auth/otp-challenges/${challengeId}/verify`,
+        url: `/api/v1/auth/otp-challenges/${challengeId}/verify`,
         payload: { code: delivered.code },
       });
       assert.equal(verified.statusCode, 200);
@@ -192,7 +192,7 @@ describe(
 
       const secondUse = await app.inject({
         method: 'POST',
-        url: `/v1/auth/otp-challenges/${challengeId}/verify`,
+        url: `/api/v1/auth/otp-challenges/${challengeId}/verify`,
         payload: { code: delivered.code },
       });
       assert.equal(secondUse.statusCode, 400);
@@ -239,7 +239,7 @@ describe(
 
       const status = await app.inject({
         method: 'GET',
-        url: '/v1/auth/campus-email-verifications/current',
+        url: '/api/v1/auth/campus-email-verifications/current',
         headers: { authorization: `Bearer ${verifiedData.sessionToken}` },
       });
       assert.equal(status.statusCode, 200);
@@ -250,7 +250,7 @@ describe(
       const destination = `attempt-${randomUUID()}@example.test`;
       const created = await app.inject({
         method: 'POST',
-        url: '/v1/auth/otp-challenges',
+        url: '/api/v1/auth/otp-challenges',
         payload: { channel: 'email', destination },
       });
 
@@ -262,7 +262,7 @@ describe(
       for (let attempt = 0; attempt < 5; attempt += 1) {
         const response = await app.inject({
           method: 'POST',
-          url: `/v1/auth/otp-challenges/${challengeId}/verify`,
+          url: `/api/v1/auth/otp-challenges/${challengeId}/verify`,
           payload: { code: wrongCode },
         });
         assert.equal(response.statusCode, attempt === 4 ? 429 : 400);
@@ -282,7 +282,7 @@ describe(
       const destination = `cooldown-${randomUUID()}@example.test`;
       const created = await app.inject({
         method: 'POST',
-        url: '/v1/auth/otp-challenges',
+        url: '/api/v1/auth/otp-challenges',
         payload: { channel: 'email', destination },
       });
       assert.equal(created.statusCode, 201);
@@ -290,7 +290,7 @@ describe(
       challengeIds.push(challengeId);
       const cooldown = await app.inject({
         method: 'POST',
-        url: '/v1/auth/otp-challenges',
+        url: '/api/v1/auth/otp-challenges',
         payload: { channel: 'email', destination },
       });
       assert.equal(cooldown.statusCode, 429);
@@ -303,7 +303,7 @@ describe(
       assert.ok(delivered);
       const expired = await app.inject({
         method: 'POST',
-        url: `/v1/auth/otp-challenges/${challengeId}/verify`,
+        url: `/api/v1/auth/otp-challenges/${challengeId}/verify`,
         payload: { code: delivered.code },
       });
       assert.equal(expired.statusCode, 400);
@@ -319,7 +319,7 @@ describe(
       delivery.failNextSend = true;
       const failedDelivery = await app.inject({
         method: 'POST',
-        url: '/v1/auth/otp-challenges',
+        url: '/api/v1/auth/otp-challenges',
         payload: { channel: 'email', destination },
       });
       assert.equal(failedDelivery.statusCode, 503);
@@ -366,7 +366,7 @@ describe(
       const destination = `rotate-${randomUUID()}@example.test`;
       const created = await app.inject({
         method: 'POST',
-        url: '/v1/auth/otp-challenges',
+        url: '/api/v1/auth/otp-challenges',
         payload: { channel: 'email', destination, displayName: 'Test User' },
       });
       const challengeId = created.json().data.challengeId as string;
@@ -375,7 +375,7 @@ describe(
       assert.ok(delivered);
       const login = await app.inject({
         method: 'POST',
-        url: `/v1/auth/otp-challenges/${challengeId}/verify`,
+        url: `/api/v1/auth/otp-challenges/${challengeId}/verify`,
         payload: { code: delivered.code },
       });
       const userId = login.json().data.user.id as string;
@@ -383,7 +383,7 @@ describe(
       const oldToken = login.json().data.sessionToken as string;
       const refreshed = await app.inject({
         method: 'POST',
-        url: '/v1/auth/sessions/refresh',
+        url: '/api/v1/auth/sessions/refresh',
         headers: { authorization: `Bearer ${oldToken}` },
       });
       assert.equal(refreshed.statusCode, 200);
@@ -391,25 +391,25 @@ describe(
       assert.notEqual(newToken, oldToken);
       const oldSessionResponse = await app.inject({
         method: 'GET',
-        url: '/v1/auth/campus-email-verifications/current',
+        url: '/api/v1/auth/campus-email-verifications/current',
         headers: { authorization: `Bearer ${oldToken}` },
       });
       assert.equal(oldSessionResponse.statusCode, 401);
       const newSessionResponse = await app.inject({
         method: 'GET',
-        url: '/v1/auth/campus-email-verifications/current',
+        url: '/api/v1/auth/campus-email-verifications/current',
         headers: { authorization: `Bearer ${newToken}` },
       });
       assert.equal(newSessionResponse.statusCode, 200);
       const revoked = await app.inject({
         method: 'DELETE',
-        url: '/v1/auth/sessions/current',
+        url: '/api/v1/auth/sessions/current',
         headers: { authorization: `Bearer ${newToken}` },
       });
       assert.equal(revoked.statusCode, 200);
       const afterRevoke = await app.inject({
         method: 'GET',
-        url: '/v1/auth/campus-email-verifications/current',
+        url: '/api/v1/auth/campus-email-verifications/current',
         headers: { authorization: `Bearer ${newToken}` },
       });
       assert.equal(afterRevoke.statusCode, 401);
@@ -418,13 +418,13 @@ describe(
     it('validates runtime DTOs and rejects unknown fields', async () => {
       const invalidChannel = await app.inject({
         method: 'POST',
-        url: '/v1/auth/otp-challenges',
+        url: '/api/v1/auth/otp-challenges',
         payload: { channel: 'sms', destination: 'user@example.test' },
       });
       assert.equal(invalidChannel.statusCode, 400);
       const unknownField = await app.inject({
         method: 'POST',
-        url: '/v1/auth/otp-challenges',
+        url: '/api/v1/auth/otp-challenges',
         payload: {
           channel: 'email',
           destination: `unknown-${randomUUID()}@example.test`,
@@ -438,7 +438,7 @@ describe(
       const loginEmail = `student-${randomUUID()}@example.test`;
       const loginChallenge = await app.inject({
         method: 'POST',
-        url: '/v1/auth/otp-challenges',
+        url: '/api/v1/auth/otp-challenges',
         payload: { channel: 'email', destination: loginEmail },
       });
       const loginChallengeId = loginChallenge.json().data.challengeId as string;
@@ -447,7 +447,7 @@ describe(
       assert.ok(loginOtp);
       const login = await app.inject({
         method: 'POST',
-        url: `/v1/auth/otp-challenges/${loginChallengeId}/verify`,
+        url: `/api/v1/auth/otp-challenges/${loginChallengeId}/verify`,
         payload: { code: loginOtp.code },
       });
       const userId = login.json().data.user.id as string;
@@ -473,7 +473,7 @@ describe(
       const campusEmail = `buyer@${domain}`;
       const request = await app.inject({
         method: 'POST',
-        url: '/v1/auth/campus-email-verifications',
+        url: '/api/v1/auth/campus-email-verifications',
         headers: { authorization: `Bearer ${token}` },
         payload: { email: campusEmail },
       });
@@ -484,7 +484,7 @@ describe(
       assert.ok(verificationOtp);
       const verified = await app.inject({
         method: 'POST',
-        url: `/v1/auth/campus-email-verifications/${challengeId}/verify`,
+        url: `/api/v1/auth/campus-email-verifications/${challengeId}/verify`,
         headers: { authorization: `Bearer ${token}` },
         payload: { code: verificationOtp.code },
       });
@@ -492,7 +492,7 @@ describe(
       assert.equal(verified.json().data.verified, true);
       const current = await app.inject({
         method: 'GET',
-        url: '/v1/auth/campus-email-verifications/current',
+        url: '/api/v1/auth/campus-email-verifications/current',
         headers: { authorization: `Bearer ${token}` },
       });
       assert.equal(current.json().data.campusId, campusId);
