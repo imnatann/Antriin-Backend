@@ -1186,6 +1186,71 @@ describe(
       assert.equal(done.data.status, 'completed');
     });
 
+    it('rejects rotation after a completed handover with the terminal-order code (R3-04)', async () => {
+      // Deterministic interleaving #1: the handover finishes first, so issuance
+      // must fail with the terminal code. The concurrent test below cannot
+      // guarantee which side wins, so this pins the code explicitly.
+      const fx = await createFixture();
+      const { order } = await makeReadyOrder(fx);
+      const issued = await pickup.issueCredential(
+        fx.pickupStaffId,
+        fx.tenantId,
+        order.id,
+      );
+      const done = await pickup.handover(
+        fx.pickupStaffId,
+        fx.tenantId,
+        issued.data.code,
+      );
+      assert.equal(done.data.status, 'completed');
+      await assert.rejects(
+        pickup.issueCredential(fx.pickupStaffId, fx.tenantId, order.id),
+        (error: unknown) =>
+          error instanceof ConflictException &&
+          codeOf(error) === 'PICKUP_ORDER_NOT_ELIGIBLE',
+      );
+    });
+
+    it('rejects a handover that loses to a completed rotation with the revoked code (R3-11)', async () => {
+      // Deterministic interleaving #2: the rotation finishes first, so the old
+      // code must be reported as REVOKED (not CONSUMED) and nothing is consumed.
+      const fx = await createFixture();
+      const { order } = await makeReadyOrder(fx);
+      const issued = await pickup.issueCredential(
+        fx.pickupStaffId,
+        fx.tenantId,
+        order.id,
+      );
+      const rotated = await pickup.issueCredential(
+        fx.pickupStaffId,
+        fx.tenantId,
+        order.id,
+      );
+      await assert.rejects(
+        pickup.handover(fx.pickupStaffId, fx.tenantId, issued.data.code),
+        (error: unknown) =>
+          error instanceof ConflictException &&
+          codeOf(error) === 'PICKUP_CREDENTIAL_REVOKED',
+      );
+      assert.equal(
+        (
+          await pool.query<{ status: string }>(
+            'SELECT status FROM orders WHERE id = $1',
+            [order.id],
+          )
+        ).rows[0].status,
+        'ready_for_pickup',
+        'a lost handover must not advance the order',
+      );
+      // The rotated code still works.
+      const done = await pickup.handover(
+        fx.pickupStaffId,
+        fx.tenantId,
+        rotated.data.code,
+      );
+      assert.equal(done.data.status, 'completed');
+    });
+
     it('serializes a handover against a concurrent rotation without double effects (R3-02c)', async () => {
       for (let round = 0; round < 3; round += 1) {
         const fx = await createFixture();
@@ -1230,7 +1295,9 @@ describe(
           assert.equal(active, '0');
           const rotation = results[1] as PromiseRejectedResult;
           assert.ok(rotation.reason instanceof ConflictException);
-          assert.equal(codeOf(rotation.reason), 'PICKUP_NOT_READY');
+          // The order is COMPLETED by the winning handover, so rotation must
+          // report the terminal-order code (R3-04), not "wait until ready".
+          assert.equal(codeOf(rotation.reason), 'PICKUP_ORDER_NOT_ELIGIBLE');
         } else {
           assert.equal(orderRow.status, 'ready_for_pickup');
           assert.equal(handovers, '0');
