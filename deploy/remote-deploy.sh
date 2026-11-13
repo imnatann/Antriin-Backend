@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
-# Runs ON the deployment host. Invoked by .github/workflows/deploy.yml, which
-# pipes this file over SSH with IMAGE and TAG already set.
+# Runs ON the deployment host. .github/workflows/deploy.yml copies this file to
+# DEPLOY_DIR and runs it from disk with IMAGE and TAG set in the environment.
+# It must stay a file: piping it through `bash -s` lets a child process that
+# inherits stdin (docker compose run) swallow the rest of the script.
 set -euo pipefail
 
 : "${IMAGE:?IMAGE is required}"
@@ -9,6 +11,10 @@ DEPLOY_DIR="${DEPLOY_DIR:-/opt/antriin}"
 APP_PORT="${APP_PORT:-3000}"
 RUNTIME_IMAGE="${IMAGE}:${TAG}"
 MIGRATOR_IMAGE="${IMAGE}:${TAG}-migrator"
+
+# Every compose invocation needs this: the compose file marks the image as
+# required. The migrate call overrides it inline with the migrator tag.
+export ANTRIIN_IMAGE="$RUNTIME_IMAGE"
 
 cd "$DEPLOY_DIR"
 
