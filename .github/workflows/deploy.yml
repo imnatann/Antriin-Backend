@@ -1,0 +1,163 @@
+name: Deploy
+
+# Ships the backend to the pilot host after CI passes on main.
+# CI (.github/workflows/ci.yml) stays the single source of truth for tests; this
+# workflow only deploys a commit that already passed it.
+on:
+  workflow_run:
+    workflows: ['CI']
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+# Never run two deploys at once, and never cancel one midway: a cancelled deploy
+# could leave the stack half-updated.
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE: ghcr.io/${{ github.repository_owner }}/antriin-backend
+  DEPLOY_DIR: /opt/antriin
+  APP_PORT: '3000'
+
+jobs:
+  build:
+    name: Build and push image
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.vars.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+
+      - id: vars
+        name: Resolve commit
+        run: echo "tag=${{ github.event.workflow_run.head_sha || github.sha }}" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push runtime image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          target: runtime
+          push: true
+          tags: |
+            ${{ env.IMAGE }}:${{ steps.vars.outputs.tag }}
+            ${{ env.IMAGE }}:latest
+          cache-from: type=gha,scope=runtime
+          cache-to: type=gha,mode=max,scope=runtime
+
+      - name: Build and push migrator image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          target: migrator
+          push: true
+          tags: |
+            ${{ env.IMAGE }}:${{ steps.vars.outputs.tag }}-migrator
+            ${{ env.IMAGE }}:migrator
+          cache-from: type=gha,scope=migrator
+          cache-to: type=gha,mode=max,scope=migrator
+
+  deploy:
+    name: Deploy to pilot host
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: production
+      url: http://${{ secrets.DEPLOY_HOST }}:${{ env.APP_PORT }}/v1/health/ready
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+
+      - name: Configure SSH
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          set -euo pipefail
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Upload compose and deploy script
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_DIR: ${{ env.DEPLOY_DIR }}
+        run: |
+          set -euo pipefail
+          ssh -i ~/.ssh/deploy_key -o BatchMode=yes "$DEPLOY_USER@$DEPLOY_HOST" "mkdir -p '$DEPLOY_DIR'"
+          scp -i ~/.ssh/deploy_key -o BatchMode=yes \
+            deploy/compose.yaml deploy/remote-deploy.sh \
+            "$DEPLOY_USER@$DEPLOY_HOST:$DEPLOY_DIR/"
+
+      - name: Log in to GHCR on the host
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GHCR_USER: ${{ github.actor }}
+        run: |
+          set -euo pipefail
+          printf '%s' "$GHCR_TOKEN" | ssh -i ~/.ssh/deploy_key -o BatchMode=yes \
+            "$DEPLOY_USER@$DEPLOY_HOST" \
+            "docker login ghcr.io -u '$GHCR_USER' --password-stdin >/dev/null && echo 'ghcr login ok'"
+
+      - name: Pull, migrate, restart and verify
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          IMAGE: ${{ env.IMAGE }}
+          TAG: ${{ needs.build.outputs.tag }}
+          DEPLOY_DIR: ${{ env.DEPLOY_DIR }}
+          APP_PORT: ${{ env.APP_PORT }}
+        run: |
+          set -euo pipefail
+          ssh -i ~/.ssh/deploy_key -o BatchMode=yes "$DEPLOY_USER@$DEPLOY_HOST" \
+            "IMAGE='$IMAGE' TAG='$TAG' DEPLOY_DIR='$DEPLOY_DIR' APP_PORT='$APP_PORT' bash -s" \
+            < deploy/remote-deploy.sh
+
+      - name: Log out of GHCR on the host
+        if: always()
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          ssh -i ~/.ssh/deploy_key -o BatchMode=yes "$DEPLOY_USER@$DEPLOY_HOST" \
+            "docker logout ghcr.io >/dev/null 2>&1 && echo 'ghcr logout ok'" || true
+
+      - name: Verify the public endpoint
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          APP_PORT: ${{ env.APP_PORT }}
+        run: |
+          set -euo pipefail
+          for attempt in $(seq 1 15); do
+            if curl --fail --silent --max-time 5 "http://$DEPLOY_HOST:$APP_PORT/v1/health/ready"; then
+              echo
+              echo "public endpoint healthy"
+              exit 0
+            fi
+            sleep 3
+          done
+          echo "public endpoint did not answer on port $APP_PORT" >&2
+          exit 1

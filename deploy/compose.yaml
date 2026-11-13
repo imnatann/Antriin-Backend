@@ -1,0 +1,105 @@
+# Production stack for the Antriin backend pilot host.
+# Rendered from the repository at deploy time; the .env file next to it is NOT
+# in the repository and holds the generated secrets.
+# Images are built and pushed by .github/workflows/deploy.yml; the deploy script
+# supplies ANTRIIN_IMAGE at invocation time so the tag is never baked in here.
+name: antriin
+
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: '10m'
+    max-file: '3'
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:?}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?}
+      POSTGRES_DB: ${POSTGRES_DB:?}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U "${POSTGRES_USER}" -d "${POSTGRES_DB}"']
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+    logging: *default-logging
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command:
+      [
+        'redis-server',
+        '--appendonly',
+        'yes',
+        '--maxmemory',
+        '192mb',
+        '--maxmemory-policy',
+        'noeviction',
+      ]
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    logging: *default-logging
+
+  # One-shot migration runner. Started explicitly by the deploy script with
+  # `docker compose run --rm migrate`, never by `up`.
+  migrate:
+    image: ${ANTRIIN_IMAGE:?}
+    profiles: ['tools']
+    env_file: .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: 'no'
+    logging: *default-logging
+
+  api:
+    image: ${ANTRIIN_IMAGE:?}
+    restart: unless-stopped
+    env_file: .env
+    ports:
+      - '${API_BIND_ADDRESS:-0.0.0.0}:3000:3000'
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          'CMD',
+          'node',
+          '-e',
+          "fetch('http://127.0.0.1:3000/v1/health/ready').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 45s
+    logging: *default-logging
+
+  worker:
+    image: ${ANTRIIN_IMAGE:?}
+    restart: unless-stopped
+    command: ['node', 'dist/worker.js']
+    env_file: .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    logging: *default-logging
+
+volumes:
+  postgres_data:
+  redis_data:
