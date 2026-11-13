@@ -312,14 +312,6 @@ async function createOrder(
   };
 }
 
-async function escrowBalance(pool: Pool): Promise<bigint> {
-  const row = await pool.query<{ balance_minor: string }>(
-    "select balance_minor::text from wallet_accounts where account_type = 'system' and system_key = $1 and currency = 'IDR'",
-    [ORDER_PAYMENT_ESCROW_ACCOUNT],
-  );
-  return row.rows[0] ? BigInt(row.rows[0].balance_minor) : BigInt(0);
-}
-
 function httpCode(error: unknown): string | undefined {
   return typeof error === 'object' && error !== null && 'response' in error
     ? ((error as { response: { code?: string } }).response?.code ?? undefined)
@@ -407,7 +399,6 @@ describe(
     it('cancels the order and stores a pending full refund WITHOUT moving money', async () => {
       const env = await createEnv(pool);
       const order = await createOrder(pool, svc.wallet, env);
-      const escrowBefore = await escrowBalance(pool);
       const view = await svc.refunds.initiateCancellationRefund({
         actorUserId: env.adminId,
         campusId: env.campusId,
@@ -424,10 +415,20 @@ describe(
       assert.equal(view.buyerId, env.buyerId);
       assert.equal(view.orderPaymentId, order.orderPaymentId);
       assert.equal(view.campusId, env.campusId);
-      // no money moved
+      // no money moved: the escrow account is shared with other suites running in
+      // parallel, so assert on this refund's own ledger link instead.
       const balance = await svc.wallet.getBalance(env.buyerId, 'IDR');
       assert.equal(balance[0].balanceMinor, '50000');
-      assert.equal(await escrowBalance(pool), escrowBefore);
+      assert.equal(
+        (
+          await pool.query<{ ledger_transaction_id: string | null }>(
+            'select ledger_transaction_id from refunds where id = $1',
+            [view.id],
+          )
+        ).rows[0].ledger_transaction_id,
+        null,
+        'a requested refund must not have a ledger transaction yet',
+      );
       // order cancelled + reservation released + capacity restored
       const orderRow = await pool.query<{
         status: string;
@@ -544,7 +545,6 @@ describe(
     it('processor success credits the buyer exactly once with a balanced ledger', async () => {
       const env = await createEnv(pool);
       const order = await createOrder(pool, svc.wallet, env);
-      const escrowBefore = await escrowBalance(pool);
       const view = await svc.refunds.initiateCancellationRefund({
         actorUserId: env.adminId,
         campusId: env.campusId,
@@ -559,11 +559,9 @@ describe(
         '100000',
         'buyer restored to 50000 + 50000 refund',
       );
-      assert.equal(
-        (await escrowBalance(pool)) - escrowBefore,
-        BigInt(-50000),
-        'escrow paid the refund',
-      );
+      // The escrow system account is shared with every other suite running in
+      // parallel (checkout credits it), so the transfer is asserted through the
+      // refund's own ledger transaction below rather than an absolute balance.
       const row = await pool.query<{
         status: string;
         succeeded_at: Date | null;
@@ -683,7 +681,6 @@ describe(
     it('failed provider outcome records the failure without any credit', async () => {
       const env = await createEnv(pool);
       const order = await createOrder(pool, svc.wallet, env);
-      const escrowBefore = await escrowBalance(pool);
       const view = await svc.refunds.initiateCancellationRefund({
         actorUserId: env.adminId,
         campusId: env.campusId,
@@ -706,7 +703,16 @@ describe(
       assert.equal(result.outcome, 'failed');
       const balance = await svc.wallet.getBalance(env.buyerId, 'IDR');
       assert.equal(balance[0].balanceMinor, '50000', 'no credit on failure');
-      assert.equal(await escrowBalance(pool), escrowBefore);
+      assert.equal(
+        (
+          await pool.query<{ ledger_transaction_id: string | null }>(
+            'select ledger_transaction_id from refunds where id = $1',
+            [view.id],
+          )
+        ).rows[0].ledger_transaction_id,
+        null,
+        'a failed refund must not have a ledger transaction',
+      );
       const row = await pool.query<{
         status: string;
         failed_at: Date | null;
