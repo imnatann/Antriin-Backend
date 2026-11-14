@@ -18,6 +18,24 @@ import { AuditService } from '../audit/audit.service';
  * Clients must echo this string back verbatim in `expectedUpdatedAt`.
  */
 const UPDATED_AT_ISO = `to_char(updated_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')`;
+const CREATED_AT_ISO = `to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')`;
+
+/**
+ * Public stall profile columns an owner may change. The keys are the wire
+ * field names, the values the column names; only these are ever interpolated
+ * into the UPDATE statement.
+ */
+const TENANT_SETTINGS_COLUMNS = {
+  name: 'name',
+  description: 'description',
+  contact: 'contact',
+  pickupInstructions: 'pickup_instructions',
+  location: 'location',
+} as const;
+
+type TenantSettingsField = keyof typeof TENANT_SETTINGS_COLUMNS;
+type TenantSettingsColumn =
+  (typeof TENANT_SETTINGS_COLUMNS)[TenantSettingsField];
 
 const TENANT_STATUSES = new Set(['open', 'closed', 'paused', 'any']);
 const OPERATIONAL_STATUSES = new Set(['open', 'closed', 'paused']);
@@ -39,8 +57,35 @@ export interface TenantRecord {
   id: string;
   campusId: string;
   name: string;
+  description: string;
+  contact: string;
+  pickupInstructions: string;
   location: string;
   status: string;
+  updatedAt: string;
+}
+
+export interface TenantSettingsInput {
+  name?: string;
+  description?: string;
+  contact?: string;
+  pickupInstructions?: string;
+  location?: string;
+  reason: string;
+  expectedUpdatedAt: string;
+}
+
+export interface TenantSettingsRecord {
+  id: string;
+  campusId: string;
+  name: string;
+  description: string;
+  contact: string;
+  pickupInstructions: string;
+  location: string;
+  status: string;
+  timezone: string;
+  createdAt: string;
   updatedAt: string;
 }
 
@@ -67,9 +112,29 @@ interface TenantReadRow {
   campus_id: string;
   campus_name: string;
   name: string;
+  description: string;
+  contact: string;
+  pickup_instructions: string;
   location: string;
   status: string;
   timezone: string;
+  // PATCH /tenants/:id/settings is guarded by optimistic concurrency, so the
+  // client needs a way to read the token it must echo back.
+  updated_at_iso: string;
+}
+
+interface TenantSettingsRow {
+  id: string;
+  campus_id: string;
+  name: string;
+  description: string;
+  contact: string;
+  pickup_instructions: string;
+  location: string;
+  status: string;
+  timezone: string;
+  created_at_iso: string;
+  updated_at_iso: string;
 }
 
 function clampLimit(limit: number | undefined, fallback = 50): number {
@@ -99,9 +164,13 @@ export class TenantsService {
       campusId: string;
       campusName: string;
       name: string;
+      description: string;
+      contact: string;
+      pickupInstructions: string;
       location: string;
       status: string;
       timezone: string;
+      updatedAt: string;
     }>;
   }> {
     const status = options.status ?? 'any';
@@ -110,8 +179,10 @@ export class TenantsService {
     }
     const limit = clampLimit(options.limit);
     const result = await this.database.pool.query<TenantReadRow>(
-      `SELECT t.id, t.campus_id, c.name AS campus_name, t.name, t.location,
-              t.status, c.timezone
+      `SELECT t.id, t.campus_id, c.name AS campus_name, t.name, t.description,
+              t.contact, t.pickup_instructions, t.location,
+              t.status, c.timezone,
+              to_char(t.updated_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS updated_at_iso
          FROM tenants t
          JOIN campuses c ON c.id = t.campus_id
         WHERE c.status = 'active'
@@ -132,14 +203,20 @@ export class TenantsService {
       campusId: string;
       campusName: string;
       name: string;
+      description: string;
+      contact: string;
+      pickupInstructions: string;
       location: string;
       status: string;
       timezone: string;
+      updatedAt: string;
     };
   }> {
     const result = await this.database.pool.query<TenantReadRow>(
-      `SELECT t.id, t.campus_id, c.name AS campus_name, t.name, t.location,
-              t.status, c.timezone
+      `SELECT t.id, t.campus_id, c.name AS campus_name, t.name, t.description,
+              t.contact, t.pickup_instructions, t.location,
+              t.status, c.timezone,
+              to_char(t.updated_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS updated_at_iso
          FROM tenants t
          JOIN campuses c ON c.id = t.campus_id
         WHERE t.id = $1 AND t.status <> 'archived' AND c.status = 'active'`,
@@ -170,13 +247,17 @@ export class TenantsService {
       const result = await tx.query<{
         id: string;
         name: string;
+        description: string;
+        contact: string;
+        pickup_instructions: string;
         location: string;
         status: string;
         updated_at_iso: string;
       }>(
         `INSERT INTO tenants (campus_id, name, location, status, updated_at)
          VALUES ($1, $2, $3, 'closed', now())
-         RETURNING id, name, location, status, ${UPDATED_AT_ISO} AS updated_at_iso`,
+         RETURNING id, name, description, contact, pickup_instructions,
+                   location, status, ${UPDATED_AT_ISO} AS updated_at_iso`,
         [campusId, name, location],
       );
       const row = result.rows[0];
@@ -195,6 +276,9 @@ export class TenantsService {
           id: row.id,
           campusId,
           name: row.name,
+          description: row.description,
+          contact: row.contact,
+          pickupInstructions: row.pickup_instructions,
           location: row.location,
           status: row.status,
           updatedAt: row.updated_at_iso,
@@ -220,9 +304,15 @@ export class TenantsService {
         tx,
       );
       const before = await this.lockEditableTenant(tx, tenantId, campusId);
+      // The public profile fields (description, contact, pickup instructions)
+      // are owned by the tenant owner via PATCH /tenants/:tenantId/settings and
+      // are only echoed back here: a campus admin never edits them.
       const result = await tx.query<{
         id: string;
         name: string;
+        description: string;
+        contact: string;
+        pickup_instructions: string;
         location: string;
         status: string;
         updated_at_iso: string;
@@ -231,7 +321,8 @@ export class TenantsService {
             SET name = $3, location = $4, updated_at = now()
           WHERE id = $1 AND campus_id = $2
             AND updated_at = $5::timestamptz
-         RETURNING id, name, location, status, ${UPDATED_AT_ISO} AS updated_at_iso`,
+         RETURNING id, name, description, contact, pickup_instructions,
+                   location, status, ${UPDATED_AT_ISO} AS updated_at_iso`,
         [tenantId, campusId, name, location, input.expectedUpdatedAt],
       );
       const row = result.rows[0];
@@ -258,6 +349,9 @@ export class TenantsService {
           id: row.id,
           campusId,
           name: row.name,
+          description: row.description,
+          contact: row.contact,
+          pickupInstructions: row.pickup_instructions,
           location: row.location,
           status: row.status,
           updatedAt: row.updated_at_iso,
@@ -424,6 +518,113 @@ export class TenantsService {
     });
   }
 
+  // ------------------------------------------------------ tenant settings
+
+  /**
+   * Owner-managed public stall profile (tenant.settings.manage). Only the
+   * supplied fields change; a body without any profile field is rejected with
+   * TENANT_SETTINGS_EMPTY. Optimistic concurrency follows convention D7: the
+   * caller echoes the microsecond `updatedAt` it read, and a mismatch is a 409
+   * rather than a silent last-writer-wins overwrite. Archived tenants are 404
+   * and the operational status is never changed here.
+   */
+  async updateSettings(
+    actorUserId: string,
+    tenantId: string,
+    input: TenantSettingsInput,
+  ): Promise<{ data: TenantSettingsRecord }> {
+    const patch = this.settingsPatch(input);
+    const reason = this.requiredReason(input.reason);
+    return this.withTransaction(async (tx) => {
+      // Lock and normalize first so an archived tenant is a 404 for every
+      // caller instead of leaking "exists but forbidden" to non-members.
+      const before = await this.lockEditableTenant(tx, tenantId);
+      await this.access.requireTenant(
+        actorUserId,
+        tenantId,
+        'tenant.settings.manage',
+        tx,
+      );
+      const values: unknown[] = [tenantId];
+      const assignments = patch.map((entry) => {
+        values.push(entry.value);
+        return `${entry.column} = $${values.length}`;
+      });
+      values.push(input.expectedUpdatedAt);
+      const result = await tx.query<TenantSettingsRow>(
+        `UPDATE tenants
+            SET ${assignments.join(', ')}, updated_at = now()
+          WHERE id = $1 AND updated_at = $${values.length}::timestamptz
+         RETURNING id, campus_id, name, description, contact,
+                   pickup_instructions, location, status,
+                   (SELECT c.timezone FROM campuses c
+                     WHERE c.id = tenants.campus_id) AS timezone,
+                   ${CREATED_AT_ISO} AS created_at_iso,
+                   ${UPDATED_AT_ISO} AS updated_at_iso`,
+        values,
+      );
+      const row = result.rows[0];
+      if (!row) {
+        throw new ConflictException({
+          code: 'TENANT_VERSION_CONFLICT',
+          message:
+            'Tenant changed since it was read; refresh expectedUpdatedAt',
+        });
+      }
+      const beforeValues: Record<TenantSettingsColumn, string> = {
+        name: before.name,
+        description: before.description,
+        contact: before.contact,
+        pickup_instructions: before.pickup_instructions,
+        location: before.location,
+      };
+      const afterValues: Record<TenantSettingsColumn, string> = {
+        name: row.name,
+        description: row.description,
+        contact: row.contact,
+        pickup_instructions: row.pickup_instructions,
+        location: row.location,
+      };
+      const changedEntries = patch.filter(
+        (entry) => beforeValues[entry.column] !== afterValues[entry.column],
+      );
+      await this.audit.append(tx, {
+        actor: { userId: actorUserId },
+        scopeType: 'tenant',
+        scopeId: tenantId,
+        action: 'tenant.settings_updated',
+        targetType: 'tenant',
+        targetId: tenantId,
+        reason,
+        metadata: {
+          campusId: before.campus_id,
+          changed: changedEntries.map((entry) => entry.field),
+          previous: Object.fromEntries(
+            changedEntries.map((entry) => [
+              entry.field,
+              beforeValues[entry.column],
+            ]),
+          ),
+        },
+      });
+      return {
+        data: {
+          id: row.id,
+          campusId: row.campus_id,
+          name: row.name,
+          description: row.description,
+          contact: row.contact,
+          pickupInstructions: row.pickup_instructions,
+          location: row.location,
+          status: row.status,
+          timezone: row.timezone,
+          createdAt: row.created_at_iso,
+          updatedAt: row.updated_at_iso,
+        },
+      };
+    });
+  }
+
   // --------------------------------------------------------------- private
 
   private async applyStatusChange(
@@ -504,6 +705,9 @@ export class TenantsService {
     campus_id: string;
     status: string;
     name: string;
+    description: string;
+    contact: string;
+    pickup_instructions: string;
     location: string;
   }> {
     const scoped = await tx.query<{
@@ -511,9 +715,13 @@ export class TenantsService {
       campus_id: string;
       status: string;
       name: string;
+      description: string;
+      contact: string;
+      pickup_instructions: string;
       location: string;
     }>(
-      `SELECT id, campus_id, status, name, location
+      `SELECT id, campus_id, status, name, description, contact,
+              pickup_instructions, location
          FROM tenants
         WHERE id = $1 AND ($2::uuid IS NULL OR campus_id = $2)
         FOR UPDATE`,
@@ -541,9 +749,13 @@ export class TenantsService {
       campusId: row.campus_id,
       campusName: row.campus_name,
       name: row.name,
+      description: row.description,
+      contact: row.contact,
+      pickupInstructions: row.pickup_instructions,
       location: row.location,
       status: row.status,
       timezone: row.timezone,
+      updatedAt: row.updated_at_iso,
     };
   }
 
@@ -551,6 +763,85 @@ export class TenantsService {
     const normalized = value?.trim();
     if (!normalized) {
       throw new BadRequestException(`${field} must not be empty`);
+    }
+    return normalized;
+  }
+
+  /**
+   * Normalizes the supplied profile fields and rejects a body that carries
+   * none of them. Only whitelisted column names reach the UPDATE statement.
+   */
+  private settingsPatch(input: TenantSettingsInput): Array<{
+    field: TenantSettingsField;
+    column: TenantSettingsColumn;
+    value: string;
+  }> {
+    const patch: Array<{
+      field: TenantSettingsField;
+      column: TenantSettingsColumn;
+      value: string;
+    }> = [];
+    if (input.name !== undefined) {
+      patch.push({
+        field: 'name',
+        column: TENANT_SETTINGS_COLUMNS.name,
+        value: this.requiredText(input.name, 'name'),
+      });
+    }
+    if (input.description !== undefined) {
+      patch.push({
+        field: 'description',
+        column: TENANT_SETTINGS_COLUMNS.description,
+        value: this.optionalText(input.description, 'description', 2000),
+      });
+    }
+    if (input.contact !== undefined) {
+      patch.push({
+        field: 'contact',
+        column: TENANT_SETTINGS_COLUMNS.contact,
+        value: this.optionalText(input.contact, 'contact', 200),
+      });
+    }
+    if (input.pickupInstructions !== undefined) {
+      patch.push({
+        field: 'pickupInstructions',
+        column: TENANT_SETTINGS_COLUMNS.pickupInstructions,
+        value: this.optionalText(
+          input.pickupInstructions,
+          'pickupInstructions',
+          1000,
+        ),
+      });
+    }
+    if (input.location !== undefined) {
+      patch.push({
+        field: 'location',
+        column: TENANT_SETTINGS_COLUMNS.location,
+        value: this.requiredText(input.location, 'location'),
+      });
+    }
+    if (patch.length === 0) {
+      throw new BadRequestException({
+        code: 'TENANT_SETTINGS_EMPTY',
+        message:
+          'At least one of name, description, contact, pickupInstructions or location is required',
+      });
+    }
+    return patch;
+  }
+
+  /** Free-text profile field: empty is allowed, oversized is rejected. */
+  private optionalText(
+    value: string,
+    field: string,
+    maxLength: number,
+  ): string {
+    const normalized = typeof value === 'string' ? value.trim() : '';
+    if (normalized.length > maxLength) {
+      throw new BadRequestException({
+        code: 'TENANT_SETTINGS_INVALID',
+        message: `${field} must be at most ${maxLength} characters`,
+      });
     }
     return normalized;
   }

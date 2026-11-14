@@ -78,6 +78,9 @@ export class CampusesService {
     data: Array<{
       id: string;
       name: string;
+      description: string;
+      contact: string;
+      pickupInstructions: string;
       location: string;
       status: string;
     }>;
@@ -98,10 +101,14 @@ export class CampusesService {
     const result = await this.database.pool.query<{
       id: string;
       name: string;
+      description: string;
+      contact: string;
+      pickup_instructions: string;
       location: string;
       status: string;
     }>(
-      `SELECT t.id, t.name, t.location, t.status
+      `SELECT t.id, t.name, t.description, t.contact, t.pickup_instructions,
+              t.location, t.status
          FROM tenants t
         WHERE t.campus_id = $1
           AND t.status <> 'archived'
@@ -111,7 +118,15 @@ export class CampusesService {
       [campusId, status, limit],
     );
     return {
-      data: result.rows,
+      data: result.rows.map((row) => ({
+        id: row.id,
+        name: row.name,
+        description: row.description,
+        contact: row.contact,
+        pickupInstructions: row.pickup_instructions,
+        location: row.location,
+        status: row.status,
+      })),
       meta: {
         campusId,
         campusName: campus.rows[0].name,

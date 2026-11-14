@@ -16,6 +16,11 @@ const tenant = {
   id: TENANT_ID,
   name: 'Kantin Demo Sehat',
   location: 'Gedung A, Lantai 1',
+  description:
+    'Masakan rumahan halal dengan bahan segar. Pesan pagi, ambil sesuai slot.',
+  contact: 'Demo only: 0812-0000-0000',
+  pickupInstructions:
+    'Datang ke konter Kantin Demo Sehat di Gedung A Lantai 1 dan tunjukkan kode pengambilan. Slot berlaku 15 menit.',
   status: 'open',
   opensAt: '07:00',
   closesAt: '21:00',
@@ -38,6 +43,7 @@ const PERMISSIONS = Object.freeze({
     'tenant.finance.read',
     'tenant.bank_account.manage',
     'tenant.payout.request',
+    'tenant.settings.manage',
   ],
   tenantKitchen: [
     'tenant.orders.read',
@@ -63,6 +69,7 @@ const PERMISSIONS = Object.freeze({
     'campus.cases.decide',
     'campus.refunds.initiate',
     'campus.payouts.read',
+    'campus.risk.read',
     'campus.ai_reviews.decide',
     'campus.audit.read',
   ],
@@ -210,6 +217,36 @@ const slots = {
   capacity: 10,
 };
 
+/**
+ * Illustrative risk signals so the campus queue has something to render.
+ * `dedupe_key` keeps re-running the seed idempotent; the subject is the demo
+ * tenant so the queue links to a real resource. No detector produced these.
+ */
+const riskSignals = [
+  {
+    subject_type: 'tenant',
+    subject_id: TENANT_ID,
+    category: 'rating_anomaly',
+    score: '0.8700',
+    model_version: 'seed-demo-v1',
+    explanation:
+      'Rating bergerak dari 3.5 ke 4.9 dalam 30 ulasan / 5 menit (data demo, bukan hasil detektor).',
+    evidence: JSON.stringify({ windowMinutes: 5, reviewCount: 30 }),
+    dedupe_key: 'seed.demo.rating_anomaly.tenant.1',
+  },
+  {
+    subject_type: 'tenant',
+    subject_id: TENANT_ID,
+    category: 'tenant_status_change',
+    score: '0.4200',
+    model_version: 'seed-demo-v1',
+    explanation:
+      'Tenant berubah status empat kali dalam satu hari (data demo, bukan hasil detektor).',
+    evidence: JSON.stringify({ changes: 4 }),
+    dedupe_key: 'seed.demo.tenant_status_change.tenant.1',
+  },
+];
+
 module.exports = {
   campus,
   tenant,
@@ -219,4 +256,5 @@ module.exports = {
   categories,
   menu,
   slots,
+  riskSignals,
 };

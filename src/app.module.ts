@@ -18,6 +18,7 @@ import { PayoutsModule } from './modules/payouts/payouts.module';
 import { CasesModule } from './modules/cases/cases.module';
 import { ReviewsModule } from './modules/reviews/reviews.module';
 import { RiskModule } from './modules/risk/risk.module';
+import { DiscoveryModule } from './modules/discovery/discovery.module';
 import { NotificationsModule } from './modules/notifications/notifications.module';
 import { AuditModule } from './modules/audit/audit.module';
 import { ReportingModule } from './modules/reporting/reporting.module';
@@ -43,6 +44,7 @@ import { ApiGuideModule } from './modules/api-guide/api-guide.module';
     CasesModule,
     ReviewsModule,
     RiskModule,
+    DiscoveryModule,
     NotificationsModule,
     AuditModule,
     ReportingModule,

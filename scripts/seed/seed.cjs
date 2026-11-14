@@ -27,6 +27,7 @@ const steps = {
   catalog: require('./steps/catalog.cjs'),
   availability: require('./steps/availability.cjs'),
   wallet: require('./steps/wallet.cjs'),
+  risk: require('./steps/risk.cjs'),
 };
 
 async function loadBuyerQuickstart(client, { tenant, campus, menu }) {
@@ -97,6 +98,7 @@ async function main() {
       fixtures,
     );
     const wallets = await run('wallet', steps.wallet, fixtures);
+    const risk = await run('risk', steps.risk, fixtures);
     const quickstart = await loadBuyerQuickstart(client, fixtures);
     return {
       campus,
@@ -105,6 +107,7 @@ async function main() {
       catalog,
       availability,
       wallets,
+      risk,
       quickstart,
     };
   });
@@ -128,6 +131,7 @@ async function main() {
         counts: summary.quickstart.counts,
         accounts: summary.accounts,
         wallets: summary.wallets,
+        risk: summary.risk,
         buyerQuickstart: {
           authorizationHeader: `Bearer ${buyer.sessionToken}`,
           tenantId: fixtures.tenant.id,

@@ -201,7 +201,7 @@ export const GUIDE_PERMISSIONS: Block[] = [
       [
         '`kitchen`',
         '`tenant.orders.read`, `tenant.orders.accept`, `tenant.orders.prepare`, `tenant.orders.pause`, `tenant.menu.manage`, `tenant.capacity.manage`, `tenant.reviews.reply`, `tenant.incidents.report`',
-        'Tidak pernah mendapat permission finansial',
+        'Tidak pernah mendapat permission finansial atau `tenant.settings.manage`',
       ],
       [
         '`pickup`',
@@ -212,7 +212,7 @@ export const GUIDE_PERMISSIONS: Block[] = [
   },
   {
     kind: 'p',
-    text: 'Permission staf bersifat interseksi: role harus mengizinkan permission itu **dan** membership harus memberikannya secara eksplisit. `tenant.finance.read`, `tenant.bank_account.manage` dan `tenant.payout.request` hanya untuk owner terverifikasi — jangan tampilkan menu rekening/pencairan untuk role lain.',
+    text: 'Permission staf bersifat interseksi: role harus mengizinkan permission itu **dan** membership harus memberikannya secara eksplisit. `tenant.finance.read`, `tenant.bank_account.manage`, `tenant.payout.request` dan `tenant.settings.manage` hanya untuk owner terverifikasi — jangan tampilkan menu rekening/pencairan/profil tenant untuk role lain. `GET /me` mengembalikan permission efektif, jadi pakai nilai itu alih-alih menyimpulkan role sendiri.',
   },
   { kind: 'h3', text: '3.2 Kampus (pengelola)' },
   {
@@ -227,7 +227,10 @@ export const GUIDE_PERMISSIONS: Block[] = [
         '`campus.tenants.manage`',
         'Buat/ubah/arsipkan tenant dan status tenant',
       ],
-      ['`campus.access.manage`', 'Kelola staf dan akses'],
+      [
+        '`campus.access.manage`',
+        'Baca daftar admin kampus, kelola domain email kampus yang diizinkan',
+      ],
       [
         '`campus.reviews.moderate`',
         'Antrean moderasi ulasan dan keputusan keep/hide',
@@ -242,9 +245,10 @@ export const GUIDE_PERMISSIONS: Block[] = [
       ],
       ['`campus.payouts.read`', 'Memantau payout tenant'],
       ['`campus.audit.read`', 'Membaca audit kampus'],
+      ['`campus.risk.read`', 'Antrean sinyal risiko/AI dan detail sinyal'],
       [
         '`campus.ai_reviews.decide`',
-        'Dicadangkan untuk tinjauan risiko — belum ada endpointnya',
+        'Keputusan manusia atas satu sinyal risiko (bukan sanksi otomatis)',
       ],
     ],
   },
@@ -256,6 +260,7 @@ export const GUIDE_PERMISSIONS: Block[] = [
       '`GET /campuses`, `GET /campuses/{id}`, `GET /campuses/{id}/tenants`',
       '`GET /tenants`, `GET /tenants/{id}`, `GET /tenants/{id}/menu`, `GET /tenants/{id}/menu/items/{itemId}`',
       '`GET /tenants/{id}/availability`, `GET /tenants/{id}/operating-hours`, `GET /tenants/{id}/reviews`',
+      '`GET /search`, `GET /recommendations`',
       '`POST /webhooks/payments/{provider}` (server-to-server, memakai signature)',
     ],
   },
@@ -328,6 +333,22 @@ export const GUIDE_FLOWS: Block[] = [
       'Moderasi kampus `keep`/`hide` dengan alasan wajib; ulasan `hidden` tidak bisa diedit pembeli.',
     ],
   },
+  { kind: 'h3', text: '4.6 Profil dan penemuan' },
+  {
+    kind: 'list',
+    items: [
+      '`GET /me` adalah satu-satunya cara aplikasi mengetahui identitas, status verifikasi email kampus, saldo, serta tenant/kampus yang diikuti beserta permission efektifnya. Pakai `tenants[].permissions` dan `campuses[].permissions` untuk memutuskan layar mana yang dirender — jangan menyimpulkan role dari respons login.',
+      'Permission pada `GET /me` sudah memperhitungkan role: owner menerima seluruh `tenant.*`, staf menerima irisan allowlist role dan grant eksplisit. Nilainya sama dengan yang diperiksa server, jadi UI dan server tidak bisa berbeda pendapat.',
+      '`PATCH /me` hanya mengubah nama tampilan. Nomor telepon dan email tidak bisa diubah di sini; keduanya butuh verifikasi ulang.',
+      'Preferensi notifikasi (`/me/notification-preferences`) tersimpan per akun agar perangkat kedua mewarisi pilihan yang sama. Belum ada provider push yang membaca `pushEnabled`.',
+      '`GET /search` dan `GET /recommendations` publik dan tidak memerlukan token. Rating rekomendasi hanya dihitung dari ulasan `visible` yang tidak dihapus; bila belum ada ulasan, `rating.average` bernilai `null` — jangan menampilkan angka bintang.',
+    ],
+  },
+  { kind: 'h3', text: '4.7 Sinyal risiko' },
+  {
+    kind: 'p',
+    text: 'Sinyal risiko adalah bukti untuk ditinjau manusia, bukan sanksi. Tidak ada endpoint yang memblokir akun, menyembunyikan ulasan, atau memindahkan uang atas dasar skor. Antrean default `state=pending` (belum diputuskan); keputusan bersifat append-only sehingga riwayatnya utuh dan keputusan terbaru menjadi status saat ini.',
+  },
 ];
 
 export const GUIDE_GAPS: Block[] = [
@@ -335,13 +356,14 @@ export const GUIDE_GAPS: Block[] = [
   {
     kind: 'list',
     items: [
-      '**Profil `/me`** (baca/ubah profil, preferensi notifikasi): belum ada endpoint. Data user hanya dari respons verifikasi OTP.',
-      '**Antrean risiko/AI** (`risk_signals`, keputusan tinjauan): modul masih scaffold. `campus.ai_reviews.decide` ada di daftar permission tetapi tidak membuka route apa pun.',
-      '**Ekspor laporan** (CSV/PDF) dan penjadwalan laporan.',
       '**Provider nyata**: OTP, QRIS, refund bank dan payout semuanya sandbox/stub. Webhook pembayaran hanya menerima event sandbox bertanda tangan.',
-      '**Upload file** (foto menu, bukti kasus): belum ada endpoint maupun storage.',
-      '**Notifikasi push/email/WhatsApp**: hanya notifikasi dalam aplikasi (`GET /me/notifications`).',
+      '**Upload file** (foto menu, bukti kasus): belum ada endpoint maupun storage. `menu_items.image_ref` masih menerima URL eksternal apa adanya.',
+      '**Notifikasi push/email/WhatsApp**: hanya notifikasi dalam aplikasi (`GET /me/notifications`). `POST /me/devices` baru mencatat perangkat; belum ada provider push yang mengirim.',
       '**Realtime/WebSocket**: belum ada; polling adalah satu-satunya cara.',
+      '**Pembatalan pesanan oleh pembeli**: belum ada endpoint. Jalur resmi adalah membuka kasus (`POST /orders/{id}/cases`) yang diputuskan pengelola kampus.',
+      '**Verifikasi kepemilikan domain email kampus**: `POST /campuses/{id}/email-domains/{domainId}/verify` mencatat keputusan pengelola, bukan pembuktian DNS otomatis.',
+      '**Produsen sinyal risiko**: belum ada detektor otomatis. Tabel `risk_signals` dan endpoint antreannya sudah ada, tetapi belum ada job yang mengisi sinyal.',
+      '**Penjadwalan laporan dan ekspor PDF**: hanya CSV (`/reports/sales.csv`, `/dashboard.csv`).',
     ],
   },
   {

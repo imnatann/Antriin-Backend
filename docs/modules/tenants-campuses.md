@@ -60,6 +60,7 @@ Data tenant `archived` tidak pernah muncul di endpoint publik mana pun; tenant a
 
 | Method | Path                                                             | Permission                                                                           | Keterangan                                                                                                                                                                                                                                                                     |
 | ------ | ---------------------------------------------------------------- | ------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| PATCH  | `/api/v1/tenants/:tenantId/settings`                             | `tenant.settings.manage` (owner)                                                     | Ubah profil publik tenant: `name`, `location`, `description`, `contact`, `pickupInstructions`. Body `{..., reason, expectedUpdatedAt}` (D7). Audit `tenant.settings_updated`. Lihat [Profil publik tenant](#profil-publik-tenant).                                             |
 | PATCH  | `/api/v1/tenants/:tenantId/status`                               | `tenant.orders.pause` untuk `paused`; `tenant.capacity.manage` untuk `open`/`closed` | Transisi operasional (pengganti `PATCH /tenants/:id/availability/status` WIP lama). Body `{status, reason, expectedUpdatedAt}`. Audit `tenant.status_changed` (metadata `from`,`to`,`via:tenant_staff`).                                                                       |
 | PUT    | `/api/v1/tenants/:tenantId/operating-hours`                      | `tenant.capacity.manage`                                                             | Ganti **seluruh** jadwal weekly: tepat 7 entri, tiap weekday 0..6 sekali. `isOpen=true` wajib `opensAt<closesAt`; `isOpen=false` wajib tanpa waktu. Body `{days[], reason}`. Audit `tenant.operating_hours_replaced`.                                                          |
 | PUT    | `/api/v1/tenants/:tenantId/operating-hours/overrides/:localDate` | `tenant.capacity.manage`                                                             | Upsert override satu tanggal lokal (unik per tenant+tanggal). `isClosed=true` XOR jendela waktu. Tanggal lampau (menurut timezone tenant) ditolak `400`. `reason` (1..300) disimpan sebagai catatan publik sekaligus reason audit. Audit `tenant.operating_hour_override_set`. |
@@ -140,6 +141,29 @@ CampusProvisioningService.revokeCampusAdmin(
 - Permissions eksplisit dari `CAMPUS_PERMISSIONS` (non-kosong, unik, tanpa nilai tak dikenal); tidak ada role superuser implisit.
 - Upsert `(campus_id, user_id)`: re-provision mengaktifkan kembali membership revoked / mengganti daftar permission. Revoke → status `revoked` + `revoked_at`; `requireCampus` langsung menolak sesudahnya.
 - Audit: `audit_events` (`campus.admin_provisioned`/`campus.admin_revoked`) selalu; `access_audit_events(grant|revoke)` **hanya untuk actor user** — lihat batasan skema di bawah.
+
+### Profil publik tenant
+
+Tenant dapat mengubah profil yang tampil di halaman publik tanpa perlu admin kampus. `PATCH /api/v1/tenants/:tenantId/settings` membutuhkan `tenant.settings.manage`, yang **hanya** dimiliki owner terverifikasi: permission ini tidak ada di allowlist role `kitchen` maupun `pickup`, sehingga tidak bisa diberikan ke staf.
+
+| Field                | Batas         | Keterangan                                        |
+| -------------------- | ------------- | ------------------------------------------------- |
+| `name`               | 1–200         | Nama tampilan tenant                              |
+| `location`           | 1–500         | Lokasi/gedung/lantai                              |
+| `description`        | 0–2000        | Deskripsi singkat; boleh dikosongkan              |
+| `contact`            | 0–200         | Kontak publik (bukan data rekening)               |
+| `pickupInstructions` | 0–1000        | Instruksi pengambilan yang ditampilkan ke pembeli |
+| `reason`             | 1–500         | **Wajib**; masuk audit                            |
+| `expectedUpdatedAt`  | ISO date-time | **Wajib**; optimistic concurrency D7              |
+
+Aturan:
+
+- Minimal satu field data harus dikirim; body tanpa field data dijawab `400 TENANT_SETTINGS_EMPTY`.
+- `expectedUpdatedAt` dibandingkan dengan `updated_at` presisi mikrodetik. Beda → `409 TENANT_VERSION_CONFLICT`. Kirim balik string yang diterima, jangan melewatinya ke `new Date()`.
+- `updated_at` disetel eksplisit oleh aplikasi karena schema tidak memakai trigger.
+- Tenant `archived` diperlakukan `404`.
+- Status tenant **tidak** dapat diubah lewat endpoint ini; gunakan `PATCH /tenants/:id/status`.
+- Admin kampus menerima field-field ini pada respons `PATCH /campuses/:campusId/tenants/:tenantId`, tetapi tidak dapat mengubahnya.
 
 ## Keputusan & asumsi
 

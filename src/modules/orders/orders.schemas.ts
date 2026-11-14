@@ -220,6 +220,171 @@ export const orderViewSchema = {
   ],
 };
 
+/** One quoted line: server-priced, never persisted. */
+export const orderQuoteItemSchema = {
+  type: 'object',
+  properties: {
+    menuItemId: { type: 'string', format: 'uuid' },
+    categoryId: { type: 'string', format: 'uuid' },
+    categoryName: { type: 'string' },
+    name: { type: 'string' },
+    description: { type: 'string' },
+    menuVersion: { type: 'integer', minimum: 1 },
+    quantity: { type: 'integer', minimum: 1, maximum: 999 },
+    baseUnitPriceMinor: { type: 'string', pattern: '^[0-9]{1,38}$' },
+    unitPriceMinor: { type: 'string', pattern: '^[0-9]{1,38}$' },
+    lineTotalMinor: { type: 'string', pattern: '^[0-9]{1,38}$' },
+    options: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          id: { type: 'string', format: 'uuid' },
+          groupId: { type: 'string', format: 'uuid' },
+          groupName: { type: 'string' },
+          name: { type: 'string' },
+          priceDeltaMinor: { type: 'string', pattern: '^[0-9]{1,38}$' },
+          groupVersion: { type: 'integer', minimum: 1 },
+          optionVersion: { type: 'integer', minimum: 1 },
+        },
+        required: [
+          'id',
+          'groupId',
+          'groupName',
+          'name',
+          'priceDeltaMinor',
+          'groupVersion',
+          'optionVersion',
+        ],
+      },
+    },
+  },
+  required: [
+    'menuItemId',
+    'categoryId',
+    'categoryName',
+    'name',
+    'description',
+    'menuVersion',
+    'quantity',
+    'baseUnitPriceMinor',
+    'unitPriceMinor',
+    'lineTotalMinor',
+    'options',
+  ],
+};
+
+/**
+ * Read-only cart preview. Identical to what checkout would charge because both
+ * use CatalogService.quote; nothing is created or reserved by quoting.
+ */
+export const orderQuoteSchema = {
+  type: 'object',
+  properties: {
+    tenant: {
+      type: 'object',
+      properties: {
+        id: { type: 'string', format: 'uuid' },
+        campusId: { type: 'string', format: 'uuid' },
+        name: { type: 'string' },
+        timezone: { type: 'string' },
+      },
+      required: ['id', 'campusId', 'name', 'timezone'],
+    },
+    slot: {
+      type: 'object',
+      properties: {
+        id: { type: 'string', format: 'uuid' },
+        startsAt: { type: 'string', format: 'date-time' },
+        endsAt: { type: 'string', format: 'date-time' },
+        version: { type: 'integer', minimum: 1 },
+      },
+      required: ['id', 'startsAt', 'endsAt', 'version'],
+    },
+    items: { type: 'array', items: orderQuoteItemSchema },
+    subtotalMinor: { type: 'string', pattern: '^[1-9][0-9]{0,37}$' },
+    totalMinor: { type: 'string', pattern: '^[1-9][0-9]{0,37}$' },
+    currency: { type: 'string', enum: ['IDR'] },
+    wallet: {
+      type: 'object',
+      properties: {
+        currency: { type: 'string', enum: ['IDR'] },
+        availableMinor: { type: 'string', pattern: '^[0-9]{1,38}$' },
+        sufficient: { type: 'boolean' },
+      },
+      required: ['currency', 'availableMinor', 'sufficient'],
+    },
+  },
+  required: [
+    'tenant',
+    'slot',
+    'items',
+    'subtotalMinor',
+    'totalMinor',
+    'currency',
+    'wallet',
+  ],
+};
+
+/** One immutable order_events row; metadata is the stored jsonb, unchanged. */
+export const orderEventSchema = {
+  type: 'object',
+  properties: {
+    id: { type: 'string', format: 'uuid' },
+    version: { type: 'integer', minimum: 1 },
+    eventType: { type: 'string' },
+    fromStatus: {
+      type: 'string',
+      nullable: true,
+      enum: [
+        'paid_awaiting_tenant',
+        'confirmed',
+        'preparing',
+        'ready_for_pickup',
+        'completed',
+        'declined',
+        'cancelled',
+      ],
+    },
+    toStatus: {
+      type: 'string',
+      nullable: true,
+      enum: [
+        'paid_awaiting_tenant',
+        'confirmed',
+        'preparing',
+        'ready_for_pickup',
+        'completed',
+        'declined',
+        'cancelled',
+      ],
+    },
+    actorUserId: { type: 'string', format: 'uuid', nullable: true },
+    actorService: { type: 'string', nullable: true },
+    reason: { type: 'string' },
+    metadata: { type: 'object', additionalProperties: true },
+    occurredAt: { type: 'string', format: 'date-time' },
+  },
+  required: [
+    'id',
+    'version',
+    'eventType',
+    'fromStatus',
+    'toStatus',
+    'actorUserId',
+    'actorService',
+    'reason',
+    'metadata',
+    'occurredAt',
+  ],
+};
+
+export const orderEventListSchema = {
+  type: 'object',
+  properties: { data: { type: 'array', items: orderEventSchema } },
+  required: ['data'],
+};
+
 export const orderPageSchema = {
   type: 'object',
   properties: {

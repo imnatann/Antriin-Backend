@@ -32,6 +32,7 @@ import { ListTenantsQueryDto } from './dto/list-tenants-query.dto';
 import { ProvisionTenantOwnerDto } from './dto/provision-tenant-owner.dto';
 import { SetTenantStatusDto } from './dto/set-tenant-status.dto';
 import { UpdateTenantDto } from './dto/update-tenant.dto';
+import { UpdateTenantSettingsDto } from './dto/update-tenant-settings.dto';
 import { TenantProvisioningService } from './tenant-provisioning.service';
 import { TenantsService } from './tenants.service';
 
@@ -42,11 +43,54 @@ const TENANT_PRESENTATION_SCHEMA: Record<string, unknown> = {
     campusId: { type: 'string', format: 'uuid' },
     campusName: { type: 'string' },
     name: { type: 'string' },
+    description: { type: 'string' },
+    contact: { type: 'string' },
+    pickupInstructions: { type: 'string' },
     location: { type: 'string' },
     status: { type: 'string', enum: ['open', 'closed', 'paused'] },
     timezone: { type: 'string' },
   },
-  required: ['id', 'campusId', 'name', 'location', 'status', 'timezone'],
+  required: [
+    'id',
+    'campusId',
+    'name',
+    'description',
+    'contact',
+    'pickupInstructions',
+    'location',
+    'status',
+    'timezone',
+  ],
+};
+
+const TENANT_SETTINGS_SCHEMA: Record<string, unknown> = {
+  type: 'object',
+  properties: {
+    id: { type: 'string', format: 'uuid' },
+    campusId: { type: 'string', format: 'uuid' },
+    name: { type: 'string' },
+    description: { type: 'string' },
+    contact: { type: 'string' },
+    pickupInstructions: { type: 'string' },
+    location: { type: 'string' },
+    status: { type: 'string', enum: ['open', 'closed', 'paused'] },
+    timezone: { type: 'string' },
+    createdAt: { type: 'string', format: 'date-time' },
+    updatedAt: { type: 'string', format: 'date-time' },
+  },
+  required: [
+    'id',
+    'campusId',
+    'name',
+    'description',
+    'contact',
+    'pickupInstructions',
+    'location',
+    'status',
+    'timezone',
+    'createdAt',
+    'updatedAt',
+  ],
 };
 
 @ApiTags('Tenants')
@@ -114,6 +158,43 @@ export class TenantsController {
     @Body() dto: SetTenantStatusDto,
   ) {
     return this.tenants.setStatusByStaff(principal.userId, tenantId, dto);
+  }
+
+  // ---------------------------------------------------- tenant settings
+
+  @Patch('tenants/:tenantId/settings')
+  @UseGuards(AuthGuard)
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary:
+      'Update the public stall profile (name, description, contact, pickup instructions, location); requires tenant.settings.manage',
+  })
+  @ApiParam({ name: 'tenantId', format: 'uuid' })
+  @ApiOkResponse({
+    description:
+      'Updated stall profile with microsecond createdAt/updatedAt (D7)',
+    schema: {
+      type: 'object',
+      properties: { data: TENANT_SETTINGS_SCHEMA },
+      required: ['data'],
+    },
+  })
+  @ApiBadRequestResponse({
+    description:
+      'Invalid payload, or no profile field supplied (TENANT_SETTINGS_EMPTY)',
+  })
+  @ApiUnauthorizedResponse({ description: 'Bearer authentication is required' })
+  @ApiForbiddenResponse({ description: 'Missing tenant.settings.manage' })
+  @ApiNotFoundResponse({ description: 'Tenant missing or archived' })
+  @ApiConflictResponse({
+    description: 'expectedUpdatedAt mismatch (TENANT_VERSION_CONFLICT)',
+  })
+  updateSettings(
+    @CurrentUser() principal: AuthenticatedPrincipal,
+    @Param('tenantId', new ParseUUIDPipe()) tenantId: string,
+    @Body() dto: UpdateTenantSettingsDto,
+  ) {
+    return this.tenants.updateSettings(principal.userId, tenantId, dto);
   }
 
   // ------------------------------------------------------ campus admin

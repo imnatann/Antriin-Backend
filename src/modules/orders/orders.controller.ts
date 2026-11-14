@@ -29,11 +29,14 @@ import {
   BuyerOrderListQueryDto,
   CheckoutDto,
   DecideScheduleProposalDto,
+  OrderQuoteDto,
 } from './dto/orders.dto';
 import { IDEMPOTENCY_KEY_PATTERN } from './orders.constants';
 import { OrdersService } from './orders.service';
 import {
+  orderEventListSchema,
   orderPageSchema,
+  orderQuoteSchema,
   orderViewSchema,
   scheduleProposalSchema,
 } from './orders.schemas';
@@ -48,6 +51,40 @@ import {
 @Controller('orders')
 export class OrdersController {
   constructor(private readonly orders: OrdersService) {}
+
+  @Post('quote')
+  @HttpCode(200)
+  @ApiOperation({
+    summary:
+      'Price a cart without creating an order (read-only preview; no reservation, no ledger, no event)',
+  })
+  @ApiOkResponse({
+    description:
+      'Server-priced cart preview plus the buyer wallet balance (wallet.sufficient = availableMinor >= totalMinor)',
+    schema: {
+      type: 'object',
+      properties: { data: orderQuoteSchema },
+      required: ['data'],
+    },
+  })
+  @ApiBadRequestResponse({
+    description:
+      'Invalid cart, too many lines, or a quote that is not priceable',
+  })
+  @ApiConflictResponse({
+    description:
+      'SLOT_CHANGED (stale expectedSlotVersion), slot full/closed, tenant not accepting orders, or unavailable menu item',
+  })
+  @ApiNotFoundResponse({
+    description: 'Buyer account or pickup slot not found',
+  })
+  @ApiUnauthorizedResponse({ description: 'Bearer authentication is required' })
+  quote(
+    @CurrentUser() principal: AuthenticatedPrincipal,
+    @Body() body: OrderQuoteDto,
+  ) {
+    return this.orders.quoteForBuyer(principal.userId, body);
+  }
 
   @Post()
   @HttpCode(201)
@@ -144,6 +181,24 @@ export class OrdersController {
     @Param('orderId', new ParseUUIDPipe()) orderId: string,
   ) {
     return this.orders.getBuyerOrder(principal.userId, orderId);
+  }
+
+  @Get(':orderId/events')
+  @ApiOperation({
+    summary: 'Read the buyer order lifecycle timeline',
+  })
+  @ApiOkResponse({
+    description:
+      'Immutable order events ordered by (occurredAt, version) ascending; 404 for orders of another buyer',
+    schema: orderEventListSchema,
+  })
+  @ApiNotFoundResponse({ description: 'Order not found for this buyer' })
+  @ApiUnauthorizedResponse({ description: 'Bearer authentication is required' })
+  events(
+    @CurrentUser() principal: AuthenticatedPrincipal,
+    @Param('orderId', new ParseUUIDPipe()) orderId: string,
+  ) {
+    return this.orders.listOrderEvents(principal.userId, orderId);
   }
 
   @Post(':orderId/schedule-proposals/:proposalId/decision')

@@ -85,6 +85,19 @@ export interface CheckoutInput {
   specialRequest?: string;
 }
 
+/**
+ * Quote input. Same cart shape as checkout minus the mandatory
+ * expectedSlotVersion: the quote is a read-only preview, so a stale version is
+ * an optional guard (SLOT_CHANGED) instead of a hard requirement.
+ */
+export interface QuoteInput {
+  tenantId: string;
+  slotId: string;
+  expectedSlotVersion?: number;
+  items: CheckoutInput['items'];
+  specialRequest?: string;
+}
+
 export interface OrderItemOptionView {
   id: string;
   groupId: string;
@@ -172,6 +185,64 @@ export interface OrderView extends OrderSummaryView {
   items: OrderItemView[];
   payment: OrderPaymentView | null;
   scheduleProposal: ScheduleProposalView | null;
+}
+
+/** Option snapshot of one quoted line (same shape CatalogService.quote emits). */
+export interface OrderQuoteItemOptionView {
+  id: string;
+  groupId: string;
+  groupName: string;
+  name: string;
+  priceDeltaMinor: string;
+  groupVersion: number;
+  optionVersion: number;
+}
+
+/**
+ * One quoted line. Prices come from CatalogService.quote (the exact method
+ * checkout prices with), so the preview and the charged amount cannot diverge;
+ * lineTotalMinor is unit price * quantity in integer minor units.
+ */
+export interface OrderQuoteItemView {
+  menuItemId: string;
+  categoryId: string;
+  categoryName: string;
+  name: string;
+  description: string;
+  menuVersion: number;
+  quantity: number;
+  baseUnitPriceMinor: string;
+  unitPriceMinor: string;
+  lineTotalMinor: string;
+  options: OrderQuoteItemOptionView[];
+}
+
+/**
+ * Read-only cart preview returned by POST /v1/orders/quote. It is never
+ * persisted: no order, no capacity reservation, no ledger entry, no event.
+ */
+export interface OrderQuoteView {
+  tenant: { id: string; campusId: string; name: string; timezone: string };
+  slot: { id: string; startsAt: string; endsAt: string; version: number };
+  items: OrderQuoteItemView[];
+  subtotalMinor: string;
+  totalMinor: string;
+  currency: 'IDR';
+  wallet: { currency: 'IDR'; availableMinor: string; sufficient: boolean };
+}
+
+/** One immutable order lifecycle event (order_events row, metadata as stored). */
+export interface OrderEventView {
+  id: string;
+  version: number;
+  eventType: string;
+  fromStatus: OrderStatus | null;
+  toStatus: OrderStatus | null;
+  actorUserId: string | null;
+  actorService: string | null;
+  reason: string;
+  metadata: Record<string, unknown>;
+  occurredAt: string;
 }
 
 /**
@@ -302,6 +373,19 @@ interface ProposalRow {
   updated_at_text: string;
 }
 
+interface OrderEventRow {
+  id: string;
+  version: number;
+  event_type: string;
+  from_status: OrderStatus | null;
+  to_status: OrderStatus | null;
+  actor_user_id: string | null;
+  actor_service: string | null;
+  reason: string;
+  metadata: Record<string, unknown> | null;
+  occurred_at_text: string;
+}
+
 interface Cursor {
   createdAt: string;
   id: string;
@@ -340,6 +424,111 @@ export class OrdersService {
     private readonly outbox: OutboxService,
     private readonly config: ConfigService,
   ) {}
+
+  // ---------------------------------------------------------------------------
+  // Buyer quote (read-only)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * POST /v1/orders/quote. Prices the cart with the SAME CatalogService.quote
+   * call checkout uses, so a preview can never disagree with the amount that is
+   * actually charged, and adds the buyer's current wallet balance so the client
+   * can warn about a shortfall before committing.
+   *
+   * READ-ONLY by construction: one transaction that only runs SELECTs. It
+   * creates no order, takes no capacity reservation, posts no ledger entry and
+   * writes no order event. Capacity authority stays in
+   * AvailabilityService.reserveForCheckout inside checkout, so a successful
+   * quote never guarantees a seat: the slot may fill (or be reconfigured)
+   * before the buyer commits, which is exactly what the optional
+   * expectedSlotVersion guard detects (409 SLOT_CHANGED).
+   */
+  async quoteForBuyer(
+    buyerId: string,
+    input: QuoteInput,
+  ): Promise<{ data: OrderQuoteView }> {
+    this.assertUuid(buyerId, 'buyer id');
+    this.assertUuid(input.tenantId, 'tenant id');
+    this.assertUuid(input.slotId, 'slot id');
+    const items = this.normalizeCheckoutItems(input.items);
+    if (
+      input.expectedSlotVersion !== undefined &&
+      (!Number.isSafeInteger(input.expectedSlotVersion) ||
+        input.expectedSlotVersion < 1)
+    ) {
+      throw new BadRequestException(
+        'expectedSlotVersion must be a positive integer',
+      );
+    }
+    if ((input.specialRequest ?? '').length > MAX_SPECIAL_REQUEST_LENGTH) {
+      throw new BadRequestException('specialRequest is too long');
+    }
+    for (const item of items) {
+      if ((item.notes ?? '').length > MAX_ITEM_NOTES_LENGTH) {
+        throw new BadRequestException('Item notes are too long');
+      }
+    }
+    const quoteItems: QuoteItemInput[] = items.map((item) => ({
+      menuItemId: item.menuItemId,
+      quantity: item.quantity,
+      optionIds: item.optionIds ?? [],
+    }));
+    return this.withTransaction(async (client) => {
+      const quote = await this.catalog.quote(
+        client,
+        input.tenantId,
+        input.slotId,
+        quoteItems,
+      );
+      // Optimistic guard for a cart priced against an older slot version. A
+      // quote without the field stays a pure price preview.
+      if (
+        input.expectedSlotVersion !== undefined &&
+        input.expectedSlotVersion !== quote.slot.version
+      ) {
+        throw new ConflictException({
+          code: 'SLOT_CHANGED',
+          message: 'Pickup slot changed since the cart was built; re-quote',
+        });
+      }
+      // Balances are read, never created: getBalance does not touch the ledger.
+      const balances = await this.wallet.getBalance(
+        buyerId,
+        quote.currency,
+        client,
+      );
+      const availableMinor = balances[0]?.balanceMinor ?? '0';
+      return {
+        data: {
+          tenant: quote.tenant,
+          slot: quote.slot,
+          items: quote.items.map((line) => ({
+            menuItemId: line.menuItemId,
+            categoryId: line.categoryId,
+            categoryName: line.categoryName,
+            name: line.name,
+            description: line.description,
+            menuVersion: line.menuVersion,
+            quantity: line.quantity,
+            baseUnitPriceMinor: line.basePriceMinor,
+            unitPriceMinor: line.unitPriceMinor,
+            lineTotalMinor: (
+              BigInt(line.unitPriceMinor) * BigInt(line.quantity)
+            ).toString(),
+            options: line.options,
+          })),
+          subtotalMinor: quote.subtotalMinor,
+          totalMinor: quote.totalMinor,
+          currency: quote.currency,
+          wallet: {
+            currency: quote.currency,
+            availableMinor,
+            sufficient: BigInt(availableMinor) >= BigInt(quote.totalMinor),
+          },
+        },
+      };
+    });
+  }
 
   // ---------------------------------------------------------------------------
   // Buyer checkout (atomic)
@@ -1108,6 +1297,52 @@ export class OrdersService {
       if (!order) throw new NotFoundException('Order not found');
       await this.expireStaleProposal(client, order);
       return { data: await this.loadOrderView(client, orderId) };
+    });
+  }
+
+  /**
+   * GET /v1/orders/:orderId/events. Buyer-scoped: another buyer's order is a
+   * 404, never a 403 (no existence leak). Events are returned in the order the
+   * lifecycle happened: (occurred_at, version) ascending, so equal timestamps
+   * still resolve deterministically by the per-order version.
+   */
+  async listOrderEvents(
+    buyerId: string,
+    orderId: string,
+  ): Promise<{ data: OrderEventView[] }> {
+    this.assertUuid(buyerId, 'buyer id');
+    this.assertUuid(orderId, 'order id');
+    return this.withTransaction(async (client) => {
+      const order = await this.fetchBuyerOrder(client, buyerId, orderId);
+      if (!order) throw new NotFoundException('Order not found');
+      return { data: await this.loadOrderEvents(client, orderId) };
+    });
+  }
+
+  /**
+   * GET /v1/tenants/:tenantId/orders/:orderId/events. Requires
+   * tenant.orders.read on the tenant in the path, checked inside the same
+   * transaction, and the order must belong to that tenant: an order id of
+   * another tenant is a 404, so it is never confirmed to exist.
+   */
+  async listTenantOrderEvents(
+    actorUserId: string,
+    tenantId: string,
+    orderId: string,
+  ): Promise<{ data: OrderEventView[] }> {
+    this.assertUuid(actorUserId, 'actor id');
+    this.assertUuid(tenantId, 'tenant id');
+    this.assertUuid(orderId, 'order id');
+    return this.withTransaction(async (client) => {
+      await this.access.requireTenant(
+        actorUserId,
+        tenantId,
+        TENANT_ORDER_PERMISSIONS.read[0],
+        client,
+      );
+      const order = await this.fetchTenantOrder(client, tenantId, orderId);
+      if (!order) throw new NotFoundException('Order not found');
+      return { data: await this.loadOrderEvents(client, orderId) };
     });
   }
 
@@ -2020,6 +2255,38 @@ export class OrdersService {
       payment,
       scheduleProposal: proposal,
     };
+  }
+
+  /**
+   * Lifecycle timeline of one order. metadata is returned exactly as the jsonb
+   * column stores it (the driver hands back the parsed value), and occurredAt
+   * is the PostgreSQL microsecond string (D7), never a JS Date.
+   */
+  private async loadOrderEvents(
+    client: PoolClient,
+    orderId: string,
+  ): Promise<OrderEventView[]> {
+    const result = await client.query<OrderEventRow>(
+      `SELECT id, version, event_type, from_status, to_status, actor_user_id,
+              actor_service, reason, metadata,
+              ${TS('occurred_at')} AS occurred_at_text
+         FROM order_events
+        WHERE order_id = $1
+        ORDER BY occurred_at, version`,
+      [orderId],
+    );
+    return result.rows.map((row) => ({
+      id: row.id,
+      version: row.version,
+      eventType: row.event_type,
+      fromStatus: row.from_status,
+      toStatus: row.to_status,
+      actorUserId: row.actor_user_id,
+      actorService: row.actor_service,
+      reason: row.reason,
+      metadata: row.metadata ?? {},
+      occurredAt: row.occurred_at_text,
+    }));
   }
 
   private async loadOrderItems(

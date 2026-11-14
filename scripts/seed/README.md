@@ -39,6 +39,11 @@ gitignored through the `seed-output*.json` pattern.
 | `steps/catalog.cjs`      | 2 categories, 4 menu items, 1 option group with 4 choices                                             |
 | `steps/availability.cjs` | 24 open pickup slots (4 days x 6 hours), capacity 10                                                  |
 | `steps/wallet.cjs`       | buyer wallet funded through a balanced demo ledger transaction                                        |
+| `steps/risk.cjs`         | 2 illustrative risk signals on the demo tenant (undecided, idempotent via `dedupe_key`)               |
+
+Risk signals are demo rows, not detector output: no model produced them and
+nothing acts on them automatically. They exist so the campus risk queue has
+something to render; a re-run never duplicates them.
 
 ## Accounts
 

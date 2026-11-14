@@ -21,6 +21,9 @@ export const TENANT_PERMISSIONS = [
   'tenant.finance.read',
   'tenant.bank_account.manage',
   'tenant.payout.request',
+  // Public stall profile: name, description, contact, pickup instructions.
+  // Owner-only in practice (staff role allowlists below do not include it).
+  'tenant.settings.manage',
 ] as const;
 export type TenantPermission = (typeof TENANT_PERMISSIONS)[number];
 export type TenantStaffRole = 'kitchen' | 'pickup';
@@ -34,6 +37,9 @@ export const CAMPUS_PERMISSIONS = [
   'campus.cases.decide',
   'campus.refunds.initiate',
   'campus.payouts.read',
+  // Reading the risk/AI queue is separate from deciding on it: an analyst may
+  // review signals without being able to record a decision.
+  'campus.risk.read',
   'campus.ai_reviews.decide',
   'campus.audit.read',
 ] as const;

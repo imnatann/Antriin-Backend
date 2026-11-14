@@ -14,11 +14,13 @@ Kitchen and pickup access is the intersection of the role's allowlist and the me
 
 `campus_memberships` stores explicit campus permissions and has no implicit campus-admin/superuser role. `requireCampus` checks the requested permission against the active membership and verifies that both the user and campus remain active. Initial campus managers and permission changes must come from a controlled bootstrap/provisioning path. No public endpoint grants campus access or broad permissions.
 
+The HTTP surface stays read-only for campus membership: `GET /api/v1/campuses/{campusId}/access` lists the active members of one campus (membership id, user id, display name, permissions, status) and requires `campus.access.manage`. It cannot grant, change or revoke anything. Campus email domains are a separate resource and are managed through `/api/v1/campuses/{campusId}/email-domains` under the same permission; see [modules/campus-access.md](modules/campus-access.md).
+
 ## Schema and integration
 
 The Drizzle definitions are in `src/database/schema/access.ts`. The root integrator must export these definitions from the shared schema index and generate/review a migration that includes the append-only database protection in `src/modules/access/access-constraints.sql`. These migration steps are handled by the root integrator. The schema contains membership tables and an access-specific audit record; the general audit module remains independent.
 
-`AccessModule` exports `AccessService` for domain modules and workers. The HTTP surface is scoped to:
+`AccessModule` exports `AccessService` for domain modules and workers. The tenant staff HTTP surface is scoped to:
 
 - `GET /api/v1/tenants/{tenantId}/staff` — list staff membership IDs, roles, explicit permissions, and status.
 - `POST /api/v1/tenants/{tenantId}/staff` — grant a kitchen or pickup membership.
@@ -26,3 +28,5 @@ The Drizzle definitions are in `src/database/schema/access.ts`. The root integra
 - `DELETE /api/v1/tenants/{tenantId}/staff/{subjectUserId}` — revoke it immediately; a reason is required in the body.
 
 Each route uses the auth guard and validates request DTOs at runtime. The controller derives the actor from the authenticated principal and returns no staff PII. Campus provisioning remains a controlled operation, with no public campus access-management endpoint.
+
+`tenant.settings.manage` (owner only, never assignable to kitchen or pickup staff) guards `PATCH /api/v1/tenants/{tenantId}/settings`, which edits the public stall profile. `campus.risk.read` guards reading the risk queue; deciding on a signal additionally requires `campus.ai_reviews.decide`.

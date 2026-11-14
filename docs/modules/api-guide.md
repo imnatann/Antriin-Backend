@@ -19,8 +19,8 @@ Tidak ada autentikasi: isinya sama dengan `/docs` yang sudah publik saat `SWAGGE
 1. **Autentikasi** — alur OTP, sesi opaque, rotasi/revoke, verifikasi email kampus, rate limit.
 2. **Konvensi respons** — envelope `{data, meta}`, envelope error beserta tabel status/kode, timestamp mikrodetik, uang sebagai string, pagination cursor, aturan idempotency.
 3. **Role dan permission** — matriks role tenant (`owner`/`kitchen`/`pickup`), daftar permission kampus, daftar route publik.
-4. **Alur dan state machine** — order, usulan jadwal, kasus/refund, settlement/payout, ulasan.
-5. **Belum tersedia** — daftar tegas fitur yang **tidak boleh** dibangun dulu (profil `/me`, risk/AI, ekspor laporan, provider nyata, upload file, push, WebSocket).
+4. **Alur dan state machine** — order, usulan jadwal, kasus/refund, settlement/payout, ulasan, profil dan penemuan, sinyal risiko.
+5. **Belum tersedia** — daftar tegas fitur yang **tidak boleh** dibangun dulu (provider nyata, upload file, push, WebSocket, pembatalan oleh pembeli, verifikasi DNS domain, produsen sinyal risiko, ekspor PDF).
 6. **Endpoint** — per tag: method, path, penanda bearer/publik, parameter (path/query/header) beserta tipe dan batasnya, body, dan setiap status respons. Envelope `{data}` dilepas otomatis supaya field payload tetap terlihat.
 7. **Objects** — setiap schema komponen dengan field, tipe, wajib/tidak, batas (range/panjang/jumlah) dan deskripsi.
 

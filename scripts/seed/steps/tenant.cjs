@@ -14,13 +14,25 @@ async function run(
   { campus, tenant, accounts, tenantMemberships, campusMemberships },
 ) {
   await client.query(
-    `insert into tenants (id, campus_id, name, location, status)
-     values ($1, $2, $3, $4, $5)
+    `insert into tenants
+       (id, campus_id, name, location, status, description, contact, pickup_instructions)
+     values ($1, $2, $3, $4, $5, $6, $7, $8)
      on conflict (id) do update
        set campus_id = excluded.campus_id, name = excluded.name,
            location = excluded.location, status = excluded.status,
+           description = excluded.description, contact = excluded.contact,
+           pickup_instructions = excluded.pickup_instructions,
            updated_at = now()`,
-    [tenant.id, campus.id, tenant.name, tenant.location, tenant.status],
+    [
+      tenant.id,
+      campus.id,
+      tenant.name,
+      tenant.location,
+      tenant.status,
+      tenant.description,
+      tenant.contact,
+      tenant.pickupInstructions,
+    ],
   );
 
   for (const [index, membership] of tenantMemberships.entries()) {

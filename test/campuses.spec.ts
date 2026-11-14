@@ -85,12 +85,17 @@ describe(
     });
 
     it('lists and searches only active campuses', async () => {
+      // The database is shared between runs, so an unscoped list is capped and
+      // ordered globally; scope the membership assertions to this run's names
+      // instead of assuming they land inside the first page.
       const all = await campuses.list({ limit: 100 });
-      const names = all.data.map((row) => row.name);
+      assert.ok(all.data.every((row) => row.status === 'active'));
+
+      const mine = await campuses.list({ search: run, limit: 100 });
+      const names = mine.data.map((row) => row.name);
       assert.ok(names.includes(`Kampus Alpha Discovery ${run}`));
       assert.ok(names.includes(`Kampus Beta Discovery ${run}`));
       assert.ok(!names.includes(`Kampus Gamma Nonaktif ${run}`));
-      assert.ok(all.data.every((row) => row.status === 'active'));
 
       const searched = await campuses.list({
         search: `ALPHA DISCOVERY ${run}`,

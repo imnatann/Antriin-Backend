@@ -6,6 +6,8 @@ import { AuthModule } from '../auth/auth.module';
 import { CasesModule } from '../cases/cases.module';
 import { OrdersModule } from '../orders/orders.module';
 import { WalletModule } from '../wallet/wallet.module';
+import { CampusSettlementsController } from './campus-settlements.controller';
+import { CampusSettlementsService } from './campus-settlements.service';
 import { SettlementsController } from './settlements.controller';
 import { SettlementsService } from './settlements.service';
 
@@ -20,6 +22,9 @@ import { SettlementsService } from './settlements.service';
  * The payout slice consumes SettlementsService.getAvailableBalance, and the
  * pickup/cases slices call the release entry points inside their own
  * transactions; the HTTP controllers of this slice only read.
+ *
+ * CampusSettlementsService is the campus-scoped read model (campus.payouts.read):
+ * it lists settlements of one campus' tenants and never recomputes a balance.
  */
 @Module({
   imports: [
@@ -31,8 +36,8 @@ import { SettlementsService } from './settlements.service';
     OrdersModule,
     forwardRef(() => CasesModule),
   ],
-  controllers: [SettlementsController],
-  providers: [SettlementsService],
+  controllers: [SettlementsController, CampusSettlementsController],
+  providers: [SettlementsService, CampusSettlementsService],
   exports: [SettlementsService],
 })
 export class SettlementsModule {}

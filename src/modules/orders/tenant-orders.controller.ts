@@ -31,6 +31,7 @@ import {
 } from './dto/orders.dto';
 import { OrdersService } from './orders.service';
 import {
+  orderEventListSchema,
   orderPageSchema,
   orderViewSchema,
   scheduleProposalSchema,
@@ -91,6 +92,30 @@ export class TenantOrdersController {
     @Param('orderId', new ParseUUIDPipe()) orderId: string,
   ) {
     return this.orders.getTenantOrder(principal.userId, tenantId, orderId);
+  }
+
+  @Get(':orderId/events')
+  @ApiOperation({
+    summary: 'Read one tenant order lifecycle timeline (tenant.orders.read)',
+  })
+  @ApiOkResponse({
+    description:
+      'Immutable order events ordered by (occurredAt, version) ascending; 404 when the order belongs to another tenant',
+    schema: orderEventListSchema,
+  })
+  @ApiForbiddenResponse({ description: 'tenant.orders.read is required' })
+  @ApiNotFoundResponse({ description: 'Order not found for this tenant' })
+  @ApiUnauthorizedResponse({ description: 'Bearer authentication is required' })
+  events(
+    @CurrentUser() principal: AuthenticatedPrincipal,
+    @Param('tenantId', new ParseUUIDPipe()) tenantId: string,
+    @Param('orderId', new ParseUUIDPipe()) orderId: string,
+  ) {
+    return this.orders.listTenantOrderEvents(
+      principal.userId,
+      tenantId,
+      orderId,
+    );
   }
 
   @Post(':orderId/confirm')

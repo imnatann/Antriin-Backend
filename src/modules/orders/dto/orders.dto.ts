@@ -105,6 +105,50 @@ export class CheckoutDto {
   specialRequest?: string;
 }
 
+/**
+ * Quote input: the same cart payload as checkout, but expectedSlotVersion is
+ * optional because a quote is a read-only preview. Nothing here is trusted as
+ * money: prices and totals are always recomputed server-side.
+ */
+export class OrderQuoteDto {
+  @ApiProperty({ format: 'uuid' })
+  @IsUUID()
+  tenantId!: string;
+
+  @ApiProperty({ format: 'uuid' })
+  @IsUUID()
+  slotId!: string;
+
+  @ApiPropertyOptional({
+    minimum: 1,
+    description:
+      'pickup_slots.version the cart was built against. When present and stale the quote is refused with 409 SLOT_CHANGED.',
+  })
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Max(2147483647)
+  expectedSlotVersion?: number;
+
+  @ApiProperty({ type: [CheckoutItemDto], minItems: 1 })
+  @IsArray()
+  @ArrayMinSize(1)
+  @ArrayMaxSize(MAX_CHECKOUT_LINES)
+  @ValidateNested({ each: true })
+  @Type(() => CheckoutItemDto)
+  items!: CheckoutItemDto[];
+
+  @ApiPropertyOptional({
+    maxLength: MAX_SPECIAL_REQUEST_LENGTH,
+    description:
+      'Carried for payload reuse with checkout; the quote validates its bounds and does not persist it.',
+  })
+  @IsOptional()
+  @IsString()
+  @MaxLength(MAX_SPECIAL_REQUEST_LENGTH)
+  specialRequest?: string;
+}
+
 /** Buyer order list filters (cursor pagination, wallet slice pattern). */
 export class BuyerOrderListQueryDto {
   @ApiPropertyOptional({ enum: ORDER_STATUSES })

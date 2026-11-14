@@ -127,6 +127,37 @@ Perubahan transport dan dokumentasi, tanpa perubahan perilaku bisnis:
 
 Bukti: `npm run test:integration` menerapkan migrasi `0000..0010` pada PostgreSQL baru dan menjalankan **418/418 tes** tanpa skip; typecheck, lint, format dan build lulus. API boot dengan `SWAGGER_ENABLED=true` melayani `/api/v1/health/live`, `/api/v1/guide`, `/api/v1/guide.md` dan `/api/v1/guide/openapi.json` (200), sedangkan `/v1/health/live` sekarang 404.
 
+## Status implementasi 14 November 2026 — kelengkapan kontrak untuk mobile & web
+
+Slice ini menutup celah kontrak yang menghalangi aplikasi mobile dan web dibangun di atas backend: identitas/profil diri, quote sebelum checkout, timeline status, profil publik tenant, monitoring kampus, akses kampus, antrean risiko, penemuan publik dan ekspor CSV. Tidak ada perubahan pada aturan uang yang sudah ada.
+
+| Slice                       | Endpoint                                                                                                  | Permission                                      | Bukti     |
+| --------------------------- | --------------------------------------------------------------------------------------------------------- | ----------------------------------------------- | --------- |
+| Profil `/me`                | `GET/PATCH /me`, `GET/PATCH /me/notification-preferences`, `GET/POST/DELETE /me/devices`                  | sesi (resource = diri sendiri)                  | 20 tes    |
+| Quote & timeline            | `POST /orders/quote`, `GET /orders/:id/events`, `GET /tenants/:id/orders/:id/events`                      | sesi pembeli; `tenant.orders.read`              | 17 tes    |
+| Profil tenant               | `PATCH /tenants/:id/settings` (+ field baru pada GET publik)                                              | `tenant.settings.manage` (owner)                | 13 tes    |
+| Monitoring & ekspor kampus  | `GET /campuses/:id/transactions`, `GET /tenants/:id/reports/sales.csv`, `GET /campuses/:id/dashboard.csv` | `campus.transactions.read`, `tenant.sales.read` | 25 tes    |
+| Akses & domain email kampus | `GET /campuses/:id/access`, CRUD `/campuses/:id/email-domains` (+`/verify`)                               | `campus.access.manage`                          | 23 tes    |
+| Settlement kampus           | `GET /campuses/:id/settlements`                                                                           | `campus.payouts.read`                           | (di atas) |
+| Antrean risiko              | `GET /campuses/:id/risk-reviews`, detail, `POST …/decision`                                               | `campus.risk.read`, `campus.ai_reviews.decide`  | 32 tes    |
+| Penemuan publik             | `GET /search`, `GET /recommendations`                                                                     | publik                                          | 15 tes    |
+
+Perubahan schema: migrasi **`0011`** menambah `tenants.description/contact/pickup_instructions`, tabel `notification_preferences`, `user_devices`, `risk_signals` dan `risk_review_decisions`. Permission baru: `tenant.settings.manage` (tenant, owner-only) dan `campus.risk.read` (kampus).
+
+Keputusan yang dijaga:
+
+- **Risiko tidak pernah menjadi sanksi.** `risk_signals` tidak punya kolom status dan tidak ada endpoint yang memblokir akun, menyembunyikan ulasan, atau memindahkan uang. Keputusan bersifat append-only; keputusan terbaru = status saat ini. Belum ada detektor otomatis yang menulis sinyal.
+- **Rating tidak dikarang.** `/recommendations` hanya menghitung `reviews` berstatus `visible` tanpa `deleted_at`; tanpa ulasan, `rating.average` = `null`.
+- **Verifikasi domain email bukan bukti DNS.** `POST …/email-domains/{id}/verify` mencatat atestasi pengelola dan menulis audit; verifikasi kepemilikan otomatis belum ada.
+- **Tidak ada endpoint yang memberi akses kampus.** `/campuses/:id/access` hanya membaca, sesuai [ACCESS.md](ACCESS.md).
+- **Quote tidak menulis apa pun.** `POST /orders/quote` memakai `CatalogService.quote` yang sama dengan checkout dalam transaksi read-only, sehingga harga di layar ringkasan tidak bisa menyimpang.
+
+Temuan integrasi yang diperbaiki saat verifikasi: `CampusesModule` memakai `AuthGuard` tanpa mengimpor `AuthModule`, sehingga API **gagal boot** meski seluruh tes HTTP berbasis stub lulus. Perbaikannya disertai `test/module-wiring.spec.ts` yang mengompilasi `AppModule` dan `WorkerModule` sungguhan — tes itu terbukti gagal bila impor tersebut dihapus.
+
+Bukti: `npm test` pada database baru (migrasi `0000..0011`) menjalankan **555 tes: 552 lulus, 0 gagal, 3 skip**; suite yang sama dijalankan dua kali berturut-turut pada database yang sama tetap 552/0 (tidak order-dependent). Typecheck, lint, format dan build lulus. API boot dengan `SWAGGER_ENABLED=true` dan seluruh endpoint baru diuji lewat HTTP nyata memakai data seed.
+
+Belum selesai dan tidak diklaim: provider OTP/QRIS/push nyata, upload file, WebSocket, pembatalan pesanan oleh pembeli, verifikasi DNS domain, detektor sinyal risiko, ekspor PDF dan penjadwalan laporan.
+
 ## Paket kerja dan Jira
 
 | Paket                                  | Tiket backend                                                                                                                                  | Status implementasi                                                                    |

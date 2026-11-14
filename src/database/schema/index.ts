@@ -62,6 +62,13 @@ export const tenants = pgTable(
       .references(() => campuses.id, { onDelete: 'restrict' }),
     name: varchar('name', { length: 200 }).notNull(),
     location: varchar('location', { length: 500 }).notNull(),
+    // Migration 0011: public tenant profile fields the owner maintains through
+    // PATCH /tenants/{id}/settings (REQUIREMENTS §3.10.2, §7.2).
+    description: varchar('description', { length: 2000 }).default('').notNull(),
+    contact: varchar('contact', { length: 200 }).default('').notNull(),
+    pickupInstructions: varchar('pickup_instructions', { length: 1000 })
+      .default('')
+      .notNull(),
     status: varchar('status', { length: 20 }).default('closed').notNull(),
     ...timestamps(),
   },
@@ -87,3 +94,5 @@ export * from './refunds';
 export * from './settlements';
 export * from './payouts';
 export * from './reviews';
+export * from './preferences';
+export * from './risk';
