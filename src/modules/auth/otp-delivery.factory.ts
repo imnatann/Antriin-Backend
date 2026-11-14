@@ -17,9 +17,7 @@ class UnavailableOtpDelivery implements OtpDeliveryPort {
  * and is refused in production, so a misconfigured host cannot silently write
  * login codes into the log.
  */
-export function createOtpDelivery(
-  config: ConfigService,
-): OtpDeliveryPort {
+export function createOtpDelivery(config: ConfigService): OtpDeliveryPort {
   const enabled =
     config.get<boolean>('AUTH_OTP_DEV_ECHO') === true &&
     config.get<string>('NODE_ENV') !== 'production';

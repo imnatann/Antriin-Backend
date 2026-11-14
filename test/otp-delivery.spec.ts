@@ -5,8 +5,7 @@ import { ConfigService } from '@nestjs/config';
 import { createOtpDelivery } from '../src/modules/auth/otp-delivery.factory';
 import { DevEchoOtpDelivery } from '../src/modules/auth/otp-delivery.dev-echo';
 
-const config = (values: Record<string, unknown>) =>
-  new ConfigService(values);
+const config = (values: Record<string, unknown>) => new ConfigService(values);
 
 describe('OTP delivery adapter selection', () => {
   it('stays unavailable by default', () => {
