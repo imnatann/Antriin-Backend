@@ -7,3 +7,6 @@ coverage/
 *.log
 .DS_Store
 .test-dist*/
+
+# Seed credentials output (live bearer tokens)
+seed-output*.json
