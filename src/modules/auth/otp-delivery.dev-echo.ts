@@ -1,9 +1,4 @@
-import {
-  Injectable,
-  Logger,
-  ServiceUnavailableException,
-} from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
+import { Injectable, Logger } from '@nestjs/common';
 import {
   type OtpDeliveryMessage,
   type OtpDeliveryPort,
@@ -11,26 +6,28 @@ import {
 
 /**
  * Pilot-only OTP delivery: writes the code to the application log instead of
- * sending it. Selected when `AUTH_OTP_DEV_ECHO=true` and NODE_ENV is not
- * production, so the login flow runs end to end (challenge -> delivery ->
+ * sending it, so the login flow runs end to end (challenge -> delivery ->
  * verify) without an email/SMS provider.
  *
- * The code is a live login credential for its TTL window. Keep LOG_LEVEL at
- * `info` or lower only on hosts you control, and never enable this in
- * production.
+ * `AUTH_OTP_DEV_ECHO` is the only switch. It is deliberately independent of
+ * NODE_ENV: the pilot host runs with NODE_ENV=production so the payment,
+ * payout and refund guards stay closed, yet still needs a working login.
+ *
+ * The code is a live login credential for its TTL window. Anyone who can read
+ * the container log can sign in as any seeded account, so enable this only on
+ * a host you control and turn it off before real users exist.
  */
 @Injectable()
 export class DevEchoOtpDelivery implements OtpDeliveryPort {
   private readonly logger = new Logger('AuthOtpDelivery');
 
-  constructor(private readonly config: ConfigService) {}
+  constructor() {
+    this.logger.warn(
+      'OTP codes are written to the application log (AUTH_OTP_DEV_ECHO=true); disable before real users exist',
+    );
+  }
 
   async send(message: OtpDeliveryMessage): Promise<void> {
-    if (this.config.get<string>('NODE_ENV') === 'production')
-      throw new ServiceUnavailableException({
-        code: 'otp_delivery_unavailable',
-        message: 'OTP delivery is not configured',
-      });
     this.logger.log(
       `otp code issued channel=${message.channel} destination=${maskDestination(
         message.destination,

@@ -15,18 +15,23 @@ describe('OTP delivery adapter selection', () => {
     assert.equal(adapter instanceof DevEchoOtpDelivery, false);
   });
 
-  it('selects the log-echo adapter when explicitly enabled outside production', () => {
+  it('stays unavailable when the flag is absent', () => {
+    const adapter = createOtpDelivery(config({ NODE_ENV: 'production' }));
+    assert.equal(adapter instanceof DevEchoOtpDelivery, false);
+  });
+
+  it('selects the log-echo adapter when explicitly enabled', () => {
     const adapter = createOtpDelivery(
       config({ NODE_ENV: 'development', AUTH_OTP_DEV_ECHO: true }),
     );
     assert.equal(adapter instanceof DevEchoOtpDelivery, true);
   });
 
-  it('refuses the log-echo adapter in production even when enabled', () => {
+  it('honours the flag in production, so a pilot host can keep its guards closed', () => {
     const adapter = createOtpDelivery(
       config({ NODE_ENV: 'production', AUTH_OTP_DEV_ECHO: true }),
     );
-    assert.equal(adapter instanceof DevEchoOtpDelivery, false);
+    assert.equal(adapter instanceof DevEchoOtpDelivery, true);
   });
 
   it('treats the flag as off unless it is the boolean true', () => {

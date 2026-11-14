@@ -13,15 +13,13 @@ class UnavailableOtpDelivery implements OtpDeliveryPort {
 }
 
 /**
- * Picks the OTP adapter. The log-echo adapter is opt-in (`AUTH_OTP_DEV_ECHO`)
- * and is refused in production, so a misconfigured host cannot silently write
- * login codes into the log.
+ * Picks the OTP adapter. `AUTH_OTP_DEV_ECHO` is the only switch, independent of
+ * NODE_ENV, so a host can keep production guards closed and still have a
+ * working login. Off by default: a host that forgets to configure a real
+ * provider fails closed instead of writing login codes into the log.
  */
 export function createOtpDelivery(config: ConfigService): OtpDeliveryPort {
-  const enabled =
-    config.get<boolean>('AUTH_OTP_DEV_ECHO') === true &&
-    config.get<string>('NODE_ENV') !== 'production';
-  return enabled
-    ? new DevEchoOtpDelivery(config)
+  return config.get<boolean>('AUTH_OTP_DEV_ECHO') === true
+    ? new DevEchoOtpDelivery()
     : new UnavailableOtpDelivery();
 }
