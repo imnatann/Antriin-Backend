@@ -53,6 +53,8 @@ export const environmentSchema = Joi.object({
     .min(1)
     .max(10)
     .default(5),
+  // Pilot/dev only: log OTP codes instead of sending them. Refused in production.
+  AUTH_OTP_DEV_ECHO: Joi.boolean().default(false),
   // Order/schedule proposal policy (pilot). Expiry never auto-accepts a proposal
   // and never starts production; preparation stays an explicit authorized action.
   ORDER_PROPOSAL_TTL_SECONDS: Joi.number()

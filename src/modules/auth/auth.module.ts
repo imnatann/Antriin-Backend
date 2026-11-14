@@ -1,4 +1,5 @@
-import { Module, ServiceUnavailableException } from '@nestjs/common';
+import { Module } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { DatabaseModule } from '../../database/database.module';
 import { InfrastructureModule } from '../../infrastructure/infrastructure.module';
 import { AUTH_OTP_DELIVERY } from './auth.constants';
@@ -6,15 +7,7 @@ import { AuthController } from './auth.controller';
 import { AuthGuard } from './auth.guard';
 import { AuthRateLimitGuard } from './auth-rate-limit.guard';
 import { AuthService } from './auth.service';
-
-class UnavailableOtpDelivery {
-  async send(): Promise<void> {
-    throw new ServiceUnavailableException({
-      code: 'otp_delivery_unavailable',
-      message: 'OTP delivery is not configured',
-    });
-  }
-}
+import { createOtpDelivery } from './otp-delivery.factory';
 
 @Module({
   imports: [DatabaseModule, InfrastructureModule],
@@ -23,7 +16,11 @@ class UnavailableOtpDelivery {
     AuthService,
     AuthGuard,
     AuthRateLimitGuard,
-    { provide: AUTH_OTP_DELIVERY, useClass: UnavailableOtpDelivery },
+    {
+      provide: AUTH_OTP_DELIVERY,
+      inject: [ConfigService],
+      useFactory: createOtpDelivery,
+    },
   ],
   exports: [AuthService, AuthGuard],
 })
