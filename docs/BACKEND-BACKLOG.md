@@ -109,11 +109,11 @@ Bukti: `npm run test:integration` menerapkan migrasi `0000..0010` pada PostgreSQ
 
 Laporan penjualan tenant (`GET /api/v1/tenants/:id/reports/sales`, `tenant.sales.read`) dan dashboard pantauan kampus (`GET /api/v1/campuses/:id/dashboard`, `campus.transactions.read`). Detail ada di [modules/reporting.md](modules/reporting.md). Tanpa tabel baru dan tanpa menulis baris: hanya `count` dan penjumlahan kolom yang sudah ada, dikelompokkan per status, dalam jendela `[from, to)` maksimum 366 hari. Definisi gross/net/fee/pajak tetap tidak dikarang karena REQUIREMENTS §3.8.8 belum memutuskannya.
 
-Yang masih terbuka dan **tidak** diklaim selesai:
+Yang masih terbuka **per 13 November 2026** dan tidak diklaim selesai saat itu — sebagian sudah dikerjakan kemudian, lihat [status 14 November](#status-implementasi-14-november-2026--kelengkapan-kontrak-untuk-mobile--web) dan [gelombang B](#status-implementasi-15-november-2026--lapisan-operasional-gelombang-b):
 
-- Antrean sinyal risiko (mis. lonjakan rating) dan `risk_reviews` — slice `risk` masih scaffold.
-- Ekspor laporan (CSV/PDF), penjadwalan laporan, dan read replica/materialized projection untuk volume besar.
-- Profil `/me`, dispatcher OTP eksternal, dan job operasional (pembersih idempotency/outbox, penyapu release, retensi/rekonsiliasi).
+- ~~Antrean sinyal risiko (mis. lonjakan rating) dan `risk_reviews` — slice `risk` masih scaffold.~~ **Selesai**: antrean risiko, keputusan manusia, dan detektor otomatis sudah ada.
+- ~~Ekspor laporan (CSV/PDF) dan penjadwalan laporan~~ **Selesai**; read replica/materialized projection untuk volume besar masih terbuka.
+- ~~Profil `/me`~~ dan ~~job operasional (pembersih idempotency, retensi)~~ **Selesai**; dispatcher OTP eksternal dan penyapu/pencocokan release masih terbuka.
 - Trigger DB penolak saldo negatif akun system (Q6) dan jalur penyelesaian `needs_assistance`.
 
 Tidak ada provider nyata, deployment, atau migrasi produksi yang diklaim.

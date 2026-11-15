@@ -70,7 +70,7 @@ API di-bind ke `0.0.0.0:3000` lewat `API_BIND_ADDRESS`.
 
 Deploy berjalan end-to-end dan diverifikasi dari internet publik.
 
-> **Catatan (15 Nov 2026):** bagian ini merekam deploy tanggal 13 November. Sejak itu `main` sudah bergerak sejauh dua commit (`95900ba`, `fc56f4b`) dan migrasi bertambah menjadi `0000..0012`, sehingga image di host **belum** memuat endpoint profil `/me`, quote, timeline, laporan, risiko, penemuan publik, maupun unggah media. Deploy ulang diperlukan sebelum host mencerminkan `main`; angka operasi/path di tabel di bawah juga sudah usang (dokumen OpenAPI saat ini jauh lebih besar).
+> **Catatan (15 Nov 2026): bagian ini BASI.** Tabel di bawah merekam deploy 13 November pada commit `9eb17c2`. Sejak itu `main` sudah bergerak **10 commit** (termasuk `95900ba`, `fc56f4b`, `46fa217`, `a1d17dd`) dan migrasi bertambah dari `0000..0010` menjadi **`0000..0013`**. Image yang berjalan di host **belum** memuat profil `/me`, quote, timeline, laporan CSV/PDF, antrean risiko, penemuan publik, unggah media, SSE, job terjadwal, rate limit, metrik, undangan staf, maupun penutupan akun. Angka 109 operasi / 89 path / 47 object di tabel sudah usang: dokumen OpenAPI saat ini **126 path / 155 operasi / 32 tag**. Deploy ulang diperlukan sebelum host mencerminkan `main`.
 
 ### Deploy terakhir yang tercatat — commit `9eb17c2`
 
