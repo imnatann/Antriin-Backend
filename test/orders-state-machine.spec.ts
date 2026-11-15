@@ -967,6 +967,11 @@ async function createFixture(pool: Pool): Promise<Fixture> {
  * Inserts a bookable slot. Default: tomorrow 10:00-11:00 local. With
  * `minutesFromNow` the window starts that many minutes from now, which is how
  * the preparation-lead gate (now >= starts_at - lead) is exercised.
+ *
+ * A slot window must stay inside one tenant-local day (slotFitsWindow), so the
+ * relative window is clamped to end before local midnight. Without the clamp
+ * the suite was time-of-day dependent: run it after 22:00 and "now + 120 min"
+ * crossed midnight, turning a passing test into a 409 outside operating hours.
  */
 async function insertSlot(
   pool: Pool,
@@ -984,7 +989,24 @@ async function insertSlot(
     version: number;
     starts_at_text: string;
   }>(
-    "INSERT INTO pickup_slots (tenant_id, starts_at, ends_at, capacity, reserved_count, status, updated_at) VALUES ($1, COALESCE(now() + ($2::int * interval '1 minute'), ($3::date + $4::time)::timestamp AT TIME ZONE 'Asia/Jakarta'), COALESCE(now() + (($2::int + 60) * interval '1 minute'), ($3::date + $5::time)::timestamp AT TIME ZONE 'Asia/Jakarta'), $6, 0, 'open', now()) RETURNING id, version, to_char(starts_at AT TIME ZONE 'UTC','YYYY-MM-DD\"T\"HH24:MI:SS.US\"Z\"') AS starts_at_text",
+    `INSERT INTO pickup_slots (tenant_id, starts_at, ends_at, capacity, reserved_count, status, updated_at)
+     VALUES ($1,
+       CASE WHEN $2::int IS NULL THEN ($3::date + $4::time)::timestamp AT TIME ZONE 'Asia/Jakarta'
+            ELSE LEAST(
+              now() + ($2::int * interval '1 minute'),
+              (date_trunc('day', now() AT TIME ZONE 'Asia/Jakarta')
+                + interval '23 hours 59 minutes 59 seconds' - interval '60 minutes')
+                AT TIME ZONE 'Asia/Jakarta')
+       END,
+       CASE WHEN $2::int IS NULL THEN ($3::date + $5::time)::timestamp AT TIME ZONE 'Asia/Jakarta'
+            ELSE LEAST(
+              now() + (($2::int + 60) * interval '1 minute'),
+              (date_trunc('day', now() AT TIME ZONE 'Asia/Jakarta')
+                + interval '23 hours 59 minutes 59 seconds')
+                AT TIME ZONE 'Asia/Jakarta')
+       END,
+       $6, 0, 'open', now())
+     RETURNING id, version, to_char(starts_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS starts_at_text`,
     [
       tenantId,
       fromNow ?? null,

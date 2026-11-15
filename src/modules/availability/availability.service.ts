@@ -110,6 +110,7 @@ const AUDIT = {
   slotClosed: 'tenant.availability.slot.closed',
   slotReopened: 'tenant.availability.slot.reopened',
   slotCapacityReduced: 'tenant.availability.slot.capacity_reduced',
+  slotRescheduled: 'tenant.availability.slot.rescheduled',
 } as const;
 const MAX_REASON_LENGTH = 300;
 
@@ -193,7 +194,10 @@ export class AvailabilityService {
       slot.status !== 'open' ||
       slot.tenant_status !== 'open' ||
       slot.campus_status !== 'active' ||
-      slot.starts_at.getTime() <= Date.now()
+      // Same rule as the listing: the slot is bookable until its window ends,
+      // so a window that already started but has not closed still admits an
+      // order.
+      slot.ends_at.getTime() <= Date.now()
     ) {
       throw new ConflictException('Pickup slot is unavailable');
     }
@@ -266,7 +270,10 @@ export class AvailabilityService {
               (starts_at AT TIME ZONE $4)::date::text AS local_date
          FROM pickup_slots
         WHERE tenant_id = $1 AND status = 'open'
-          AND starts_at > now() AND reserved_count < capacity
+          -- The window, not the start, decides visibility: a 21:15-21:45 slot
+          -- must stay bookable at 21:20. Hiding it the moment it starts told
+          -- buyers a slot had vanished while pickup was still open.
+          AND ends_at > now() AND reserved_count < capacity
           AND starts_at >= ($2::date::timestamp AT TIME ZONE $4)
           AND starts_at < (($3::date + 1)::timestamp AT TIME ZONE $4)
         ORDER BY starts_at, id LIMIT ${BUYER_CANDIDATE_LIMIT}`,
@@ -396,10 +403,18 @@ export class AvailabilityService {
   ) {
     this.assertUuid(tenantId, 'tenant id');
     const reason = this.optionalReason(input.reason);
-    const startsAt = this.parseFutureInstant(input.startsAt, 'startsAt');
-    const endsAt = this.parseFutureInstant(input.endsAt, 'endsAt');
+    const startsAt = this.parseInstant(input.startsAt, 'startsAt');
+    const endsAt = this.parseInstant(input.endsAt, 'endsAt');
     if (endsAt.getTime() <= startsAt.getTime()) {
       throw new BadRequestException('endsAt must be after startsAt');
+    }
+    // A slot is usable while its window is still open, so a window that has
+    // already started is still legitimate: at 21:01 a 21:00-21:30 slot can
+    // still take an order. Only a window that has fully closed is refused.
+    if (endsAt.getTime() <= Date.now()) {
+      throw new BadRequestException(
+        'The pickup window has already ended; a slot must end in the future',
+      );
     }
     if (
       !Number.isSafeInteger(input.capacity) ||
@@ -494,14 +509,23 @@ export class AvailabilityService {
     input: {
       capacity?: number;
       status?: 'open' | 'closed';
+      startsAt?: string;
+      endsAt?: string;
       expectedVersion: number;
       reason?: string;
     },
   ) {
     this.assertUuid(tenantId, 'tenant id');
     this.assertUuid(slotId, 'slot id');
-    if (input.capacity === undefined && input.status === undefined) {
-      throw new BadRequestException('Provide capacity and/or status');
+    if (
+      input.capacity === undefined &&
+      input.status === undefined &&
+      input.startsAt === undefined &&
+      input.endsAt === undefined
+    ) {
+      throw new BadRequestException(
+        'Provide capacity, status, startsAt and/or endsAt',
+      );
     }
     if (
       input.capacity !== undefined &&
@@ -560,12 +584,65 @@ export class AvailabilityService {
         );
       }
       const status = input.status ?? row.status;
+
+      // Rescheduling: a window is only ever moved as a whole, so each endpoint
+      // falls back to the stored value and the pair is validated together.
+      const nextStartsAt =
+        input.startsAt === undefined
+          ? row.starts_at
+          : this.parseInstant(input.startsAt, 'startsAt');
+      const nextEndsAt =
+        input.endsAt === undefined
+          ? row.ends_at
+          : this.parseInstant(input.endsAt, 'endsAt');
+      const willReschedule =
+        nextStartsAt.getTime() !== row.starts_at.getTime() ||
+        nextEndsAt.getTime() !== row.ends_at.getTime();
+      if (willReschedule) {
+        if (nextEndsAt.getTime() <= nextStartsAt.getTime()) {
+          throw new BadRequestException('endsAt must be after startsAt');
+        }
+        // Moving a window that already took orders would silently change what
+        // the buyer was promised. The supported route for that is a schedule
+        // proposal (buyer consent), not an edit by the tenant.
+        if (row.reserved_count > 0) {
+          throw new ConflictException({
+            code: 'SLOT_HAS_RESERVATIONS',
+            message:
+              'A slot with reserved orders cannot be rescheduled; close it and propose a new time to the affected buyers',
+          });
+        }
+        // The window must still be usable after the change: rescheduling into
+        // the past would create a slot nobody can ever book.
+        if (nextEndsAt.getTime() <= Date.now()) {
+          throw new ConflictException(
+            'The new pickup window has already ended',
+          );
+        }
+        const timezone = await this.getTimezone(client, tenantId);
+        if (
+          !(await this.slotFitsOperatingHours(client, {
+            ...row,
+            starts_at: nextStartsAt,
+            ends_at: nextEndsAt,
+            tenant_id: tenantId,
+            timezone,
+          }))
+        ) {
+          throw new ConflictException(
+            'The new pickup window is outside operating hours',
+          );
+        }
+      }
+
       const willClose = status === 'closed' && row.status === 'open';
       const willReopen = status === 'open' && row.status !== 'open';
       const willReduceCapacity = capacity < row.capacity;
       if (willReopen) {
-        if (row.starts_at.getTime() <= Date.now()) {
-          throw new ConflictException('Pickup slot already started');
+        // Same window rule as everywhere else: reopening is refused only once
+        // the window has actually closed, not the moment it starts.
+        if (row.ends_at.getTime() <= Date.now()) {
+          throw new ConflictException('Pickup slot window has already ended');
         }
         const timezone = await this.getTimezone(client, tenantId);
         if (
@@ -595,12 +672,25 @@ export class AvailabilityService {
           reserved_count: number;
           status: 'open' | 'closed';
           version: number;
+          starts_at_text: string;
+          ends_at_text: string;
         }>(
           `UPDATE pickup_slots
-              SET capacity = $3, status = $4, version = version + 1, updated_at = now()
+              SET capacity = $3, status = $4, starts_at = $6, ends_at = $7,
+                  version = version + 1, updated_at = now()
             WHERE tenant_id = $1 AND id = $2 AND version = $5
-            RETURNING capacity, reserved_count, status, version`,
-          [tenantId, slotId, capacity, status, input.expectedVersion],
+            RETURNING capacity, reserved_count, status, version,
+                      ${TS('starts_at')} AS starts_at_text,
+                      ${TS('ends_at')} AS ends_at_text`,
+          [
+            tenantId,
+            slotId,
+            capacity,
+            status,
+            input.expectedVersion,
+            nextStartsAt,
+            nextEndsAt,
+          ],
         );
       } catch (error) {
         throw this.mapSlotWriteError(error);
@@ -644,10 +734,28 @@ export class AvailabilityService {
           metadata: { capacity: updated.capacity },
         });
       }
+      if (willReschedule) {
+        // A window change is a capacity decision like any other, so it carries
+        // the actor and a reason and records both ends of the change.
+        await this.audit.append(client, {
+          ...auditBase,
+          action: AUDIT.slotRescheduled,
+          reason: reason ?? 'Pickup slot rescheduled',
+          metadata: {
+            previousStartsAt: this.formatInstant(row.starts_at),
+            previousEndsAt: this.formatInstant(row.ends_at),
+            startsAt: updated.starts_at_text,
+            endsAt: updated.ends_at_text,
+            activeReservations: row.reserved_count,
+          },
+        });
+      }
       return {
         data: {
           id: slotId,
           tenantId,
+          startsAt: updated.starts_at_text,
+          endsAt: updated.ends_at_text,
           capacity: updated.capacity,
           reservedCount: updated.reserved_count,
           status: updated.status,
@@ -1280,16 +1388,24 @@ export class AvailabilityService {
     return result.rows[0].timezone;
   }
 
-  private parseFutureInstant(value: string, field: string): Date {
+  /**
+   * Parses an ISO-8601 instant without judging whether it is in the future.
+   * The future check belongs to the window as a whole (it must end in the
+   * future), not to each endpoint: requiring startsAt to be future made a
+   * slot that had just begun impossible to create.
+   */
+  /** ISO-8601 text for audit metadata (never a locale-formatted string). */
+  private formatInstant(value: Date): string {
+    return value.toISOString();
+  }
+
+  private parseInstant(value: string, field: string): Date {
     if (typeof value !== 'string' || !ISO_INSTANT_PATTERN.test(value)) {
       throw new BadRequestException(`${field} must be an ISO-8601 timestamp`);
     }
     const date = new Date(value);
     if (!Number.isFinite(date.getTime())) {
       throw new BadRequestException(`${field} is not a valid timestamp`);
-    }
-    if (date.getTime() <= Date.now()) {
-      throw new BadRequestException(`${field} must be a future timestamp`);
     }
     return date;
   }

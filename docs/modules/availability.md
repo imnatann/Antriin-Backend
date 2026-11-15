@@ -114,10 +114,13 @@ tidak pernah dipercaya sebagai otoritas.
    - unique `order_id`; replay (bahkan paralel) mengembalikan reservasi yang sama
      tanpa menambah kursi; order sama dengan slot/tenant berbeda -> 409.
 3. Satu kursi = satu order. Tidak ada reservasi multi-kursi.
-4. Slot harus mulai di masa depan untuk reserve/quote (`starts_at > now`), tenant
-   harus `open`, kampus `active`, slot `open`, dan window slot harus berada dalam
-   satu hari lokal yang sama serta muat dalam jam operasional (override mengalahkan
-   weekly).
+4. **Window, bukan jam mulai, yang menentukan.** Slot bisa dipakai selama
+   `ends_at > now`: slot 21:15-21:45 tetap tampil dan tetap bisa dipesan pada
+   21:20 karena pengambilan masih buka sampai 21:45. Tenant harus `open`, kampus
+   `active`, slot `open`, dan window slot harus berada dalam satu hari lokal yang
+   sama serta muat dalam jam operasional (override mengalahkan weekly).
+   Konsekuensi yang sama berlaku saat membuat slot: pada 21:01 slot 21:00-21:30
+   diterima, sedangkan window yang sudah sepenuhnya lewat ditolak.
 5. Uang tidak disentuh slice ini; reservasi kapasitas digabung dengan debit wallet
    oleh slice orders dalam satu transaksi.
 6. Baris `orders` harus sudah ada sebelum `reserveForCheckout` (FK 0007, lihat
@@ -128,12 +131,13 @@ tidak pernah dipercaya sebagai otoritas.
 Aksi manajemen yang berdampak pada komitmen pembeli menulis `audit_events` lewat
 `AuditService.append` **dalam transaksi yang sama** (gagal tulis = rollback aksi):
 
-| Aksi                        | action                                      | reason                                    | metadata                                       |
-| --------------------------- | ------------------------------------------- | ----------------------------------------- | ---------------------------------------------- |
-| Buat slot                   | `tenant.availability.slot.created`          | opsional (default 'Pickup slot created')  | capacity, startsAt, endsAt                     |
-| Tutup slot (open -> closed) | `tenant.availability.slot.closed`           | **WAJIB 1..300 char**                     | activeReservations                             |
-| Buka kembali                | `tenant.availability.slot.reopened`         | opsional (default 'Pickup slot reopened') | capacity                                       |
-| Turunkan kapasitas          | `tenant.availability.slot.capacity_reduced` | **WAJIB 1..300 char**                     | previousCapacity, capacity, activeReservations |
+| Aksi                        | action                                      | reason                                       | metadata                                                               |
+| --------------------------- | ------------------------------------------- | -------------------------------------------- | ---------------------------------------------------------------------- |
+| Buat slot                   | `tenant.availability.slot.created`          | opsional (default 'Pickup slot created')     | capacity, startsAt, endsAt                                             |
+| Tutup slot (open -> closed) | `tenant.availability.slot.closed`           | **WAJIB 1..300 char**                        | activeReservations                                                     |
+| Buka kembali                | `tenant.availability.slot.reopened`         | opsional (default 'Pickup slot reopened')    | capacity                                                               |
+| Turunkan kapasitas          | `tenant.availability.slot.capacity_reduced` | **WAJIB 1..300 char**                        | previousCapacity, capacity, activeReservations                         |
+| Geser window slot           | `tenant.availability.slot.rescheduled`      | opsional (default 'Pickup slot rescheduled') | previousStartsAt, previousEndsAt, startsAt, endsAt, activeReservations |
 
 Actor selalu dari sesi (principal AuthGuard), tidak pernah dari body. Scope
 `tenant`, target `pickup_slot`. Satu PATCH yang menutup sekaligus menurunkan
@@ -185,7 +189,7 @@ operasional (lock baris tenant) dan `lockTenantContext` di slice ini.
 
 - Batas kapasitas 1..2.147.483.647 divalidasi di SERVICE juga (R2-06), bukan hanya
   DTO, sehingga pemanggil non-HTTP tidak memicu 22003 -> 500.
-- Reopen slot yang `starts_at`-nya sudah lewat ditolak (409 `already started`).
+- Reopen slot yang **window**-nya sudah lewat ditolak (409 `window has already ended`); slot yang sudah mulai tetapi belum berakhir tetap boleh dibuka kembali.
 - Permission manajemen slot: `tenant.capacity.manage` (D10) — staf kitchen bisa
   bila diberi grant eksplisit; staf pickup tidak.
 

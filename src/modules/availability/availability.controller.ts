@@ -94,12 +94,14 @@ export class AvailabilityController {
   @ApiBearerAuth()
   @ApiOperation({
     summary:
-      'Tenant staff: create a pickup slot (future window within operating hours, unique per tenant)',
+      'Tenant staff: create a pickup slot (open window within operating hours, unique per tenant)',
+    description:
+      'The window only has to end in the future, so a slot that has just started can still be created: at 21:01 a 21:00-21:30 slot is accepted because pickup stays open until 21:30. A window that has fully ended is refused.',
   })
   @ApiOkResponse({ description: 'Slot created with version 1' })
   @ApiBadRequestResponse({
     description:
-      'Malformed/non-ISO timestamps, endsAt <= startsAt, past window, capacity outside 1..2147483647, reason > 300 chars, slot outside operating hours, unknown body fields',
+      'Malformed/non-ISO timestamps, endsAt <= startsAt, window already ended, capacity outside 1..2147483647, reason > 300 chars, slot outside operating hours, unknown body fields',
   })
   @ApiUnauthorizedResponse({ description: 'Missing or invalid bearer token' })
   @ApiForbiddenResponse({
@@ -124,12 +126,14 @@ export class AvailabilityController {
   @ApiBearerAuth()
   @ApiOperation({
     summary:
-      'Tenant staff: update slot capacity and/or open/close it (optimistic concurrency via expectedVersion)',
+      'Tenant staff: update slot capacity, open/close it, and/or move its window (optimistic concurrency via expectedVersion)',
+    description:
+      'startsAt/endsAt reschedule the window; each falls back to the stored value, so sending only one keeps the other. A slot with reserved orders cannot be rescheduled, because that would silently change what a buyer was promised - use a schedule proposal instead. Every change bumps version and is audited.',
   })
   @ApiOkResponse({ description: 'Updated slot with bumped version' })
   @ApiBadRequestResponse({
     description:
-      'Malformed slotId, no capacity/status provided, capacity outside 1..2147483647, invalid status, invalid expectedVersion, or missing/overlong reason (reason is required to close a slot or reduce capacity)',
+      'Malformed slotId, nothing to change, capacity outside 1..2147483647, invalid status or timestamps, endsAt <= startsAt, invalid expectedVersion, or missing/overlong reason (reason is required to close a slot or reduce capacity)',
   })
   @ApiUnauthorizedResponse({ description: 'Missing or invalid bearer token' })
   @ApiForbiddenResponse({
@@ -140,7 +144,7 @@ export class AvailabilityController {
   })
   @ApiConflictResponse({
     description:
-      'Version conflict, capacity below reserved orders, or reopen rejected (slot already started / outside operating hours)',
+      'Version conflict, capacity below reserved orders, reschedule refused (SLOT_HAS_RESERVATIONS, new window already ended, outside operating hours, or collides with another window), or reopen rejected (window already ended)',
   })
   updateSlot(
     @CurrentUser() principal: { userId: string; sessionId: string },

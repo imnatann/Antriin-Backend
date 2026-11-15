@@ -360,25 +360,195 @@ describe(
       assert.equal(audits[1].metadata.activeReservations, 2);
       assert.equal(audits[2].reason, 'Pickup slot reopened');
 
-      // Reopening a slot that already started is rejected.
-      const started = await insertSlot(pool, fx.tenantId, {
+      // A slot that has started but whose window is still open can be
+      // reopened: the window, not the start, decides. The earlier rule
+      // ("already started") hid a slot from buyers the moment its start time
+      // passed, even though pickup was still open.
+      const midWindow = await insertSlot(pool, fx.tenantId, {
         localDate: fx.todayLocal,
         start: '00:00',
         end: '23:59',
       });
-      await availability.updateSlot(fx.ownerId, fx.tenantId, started.id, {
+      await availability.updateSlot(fx.ownerId, fx.tenantId, midWindow.id, {
         status: 'closed',
-        expectedVersion: started.version,
+        expectedVersion: midWindow.version,
+        reason: 'Tutup untuk uji reopen',
+      });
+      const reopenedMidWindow = await availability.updateSlot(
+        fx.ownerId,
+        fx.tenantId,
+        midWindow.id,
+        { status: 'open', expectedVersion: midWindow.version + 1 },
+      );
+      assert.equal(reopenedMidWindow.data.status, 'open');
+
+      // Only a window that has fully ended is refused.
+      const ended = await insertSlot(pool, fx.tenantId, {
+        localDate: jakartaLocalDate(-1),
+        start: '00:00',
+        end: '01:00',
+      });
+      await availability.updateSlot(fx.ownerId, fx.tenantId, ended.id, {
+        status: 'closed',
+        expectedVersion: ended.version,
         reason: 'Tutup untuk uji reopen',
       });
       await assert.rejects(
-        availability.updateSlot(fx.ownerId, fx.tenantId, started.id, {
+        availability.updateSlot(fx.ownerId, fx.tenantId, ended.id, {
           status: 'open',
-          expectedVersion: started.version + 1,
+          expectedVersion: ended.version + 1,
         }),
         (error: unknown) =>
           error instanceof ConflictException &&
-          /already started/.test(messageOf(error)),
+          /window has already ended/.test(messageOf(error)),
+      );
+    });
+
+    /**
+     * Regression: the pickup *window*, not its start, decides whether a slot is
+     * usable. All three of these failed before the fix:
+     *  - a slot 21:15-21:45 vanished from the buyer listing at 21:16;
+     *  - checkout rejected that same slot with "Pickup slot is unavailable";
+     *  - creating a 21:00-21:30 slot at 21:01 was refused as a past timestamp.
+     */
+    it('treats an already-started window as bookable until it ends', async () => {
+      const fx = await createFixture(pool);
+      // Yesterday's window is over. Today's 00:00-23:59 window is running.
+      const running = await insertSlot(pool, fx.tenantId, {
+        localDate: fx.todayLocal,
+        start: '00:00',
+        end: '23:59',
+      });
+      const listing = await availability.listAvailability(fx.tenantId, {
+        date: fx.todayLocal,
+      });
+      assert.equal(
+        listing.data.slots.some((slot) => slot.id === running.id),
+        true,
+        'a running window must stay visible while it is still open',
+      );
+
+      const quoteContext = await withTx(pool, (client) =>
+        availability.assertBookableSlot(client, fx.tenantId, running.id),
+      );
+      assert.equal(quoteContext.slotId, running.id);
+    });
+
+    it('hides and refuses a window that has already ended', async () => {
+      const fx = await createFixture(pool);
+      const ended = await insertSlot(pool, fx.tenantId, {
+        localDate: jakartaLocalDate(-1),
+        start: '10:00',
+        end: '11:00',
+      });
+      const listing = await availability.listAvailability(fx.tenantId, {
+        date: jakartaLocalDate(-1),
+      });
+      assert.equal(
+        listing.data.slots.some((slot) => slot.id === ended.id),
+        false,
+        'an ended window must not be offered to buyers',
+      );
+      await assert.rejects(
+        withTx(pool, (client) =>
+          availability.assertBookableSlot(client, fx.tenantId, ended.id),
+        ),
+        (error: unknown) =>
+          error instanceof ConflictException &&
+          /unavailable/.test(messageOf(error)),
+      );
+    });
+
+    it('creates a slot whose start has passed but whose window is still open', async () => {
+      const fx = await createFixture(pool);
+      const now = Date.now();
+      const start = new Date(now - 60_000); // one minute ago
+      const end = new Date(now + 30 * 60_000); // still open
+      const created = await availability.createSlot(fx.ownerId, fx.tenantId, {
+        startsAt: start.toISOString(),
+        endsAt: end.toISOString(),
+        capacity: 2,
+        reason: 'Slot dibuat terlambat satu menit',
+      });
+      assert.equal(created.data.capacity, 2);
+
+      // A window that has fully closed is still refused.
+      await assert.rejects(
+        availability.createSlot(fx.ownerId, fx.tenantId, {
+          startsAt: new Date(now - 60 * 60_000).toISOString(),
+          endsAt: new Date(now - 30 * 60_000).toISOString(),
+          capacity: 2,
+        }),
+        (error: unknown) =>
+          error instanceof BadRequestException &&
+          /already ended/.test(messageOf(error)),
+      );
+    });
+
+    it('reschedules a slot window and refuses it once orders are reserved', async () => {
+      const fx = await createFixture(pool);
+      const slot = await insertSlot(pool, fx.tenantId, {
+        localDate: fx.tomorrowLocal,
+        start: '10:00',
+        end: '11:00',
+      });
+      // Moving only one endpoint keeps the other.
+      const moved = await availability.updateSlot(
+        fx.ownerId,
+        fx.tenantId,
+        slot.id,
+        {
+          startsAt: `${fx.tomorrowLocal}T10:30:00+07:00`,
+          expectedVersion: slot.version,
+        },
+      );
+      assert.equal(moved.data.startsAt, `${fx.tomorrowLocal}T03:30:00.000000Z`);
+      assert.equal(moved.data.endsAt, `${fx.tomorrowLocal}T04:00:00.000000Z`);
+
+      const audits = await readAudit(pool, slot.id);
+      assert.equal(audits.length, 1);
+      assert.equal(audits[0].action, 'tenant.availability.slot.rescheduled');
+      const metadata = audits[0].metadata as Record<string, string>;
+      assert.equal(metadata.previousStartsAt.includes('T03:00'), true);
+      assert.equal(metadata.startsAt.includes('T03:30'), true);
+
+      // Inverted or non-positive windows are rejected.
+      await assert.rejects(
+        availability.updateSlot(fx.ownerId, fx.tenantId, slot.id, {
+          startsAt: `${fx.tomorrowLocal}T12:00:00+07:00`,
+          expectedVersion: moved.data.version,
+        }),
+        (error: unknown) =>
+          error instanceof BadRequestException &&
+          /after startsAt/.test(messageOf(error)),
+      );
+
+      // A slot that already took orders cannot be moved: that would silently
+      // change what the buyer was promised.
+      const reserved = await insertSlot(pool, fx.tenantId, {
+        localDate: fx.tomorrowLocal,
+        start: '14:00',
+        end: '15:00',
+        capacity: 2,
+      });
+      const reservedOrder = await newOrder(pool, fx, reserved.id);
+      await withTx(pool, (client) =>
+        availability.reserveForCheckout(
+          client,
+          fx.tenantId,
+          reserved.id,
+          reserved.version,
+          reservedOrder,
+        ),
+      );
+      await assert.rejects(
+        availability.updateSlot(fx.ownerId, fx.tenantId, reserved.id, {
+          endsAt: `${fx.tomorrowLocal}T15:30:00+07:00`,
+          expectedVersion: reserved.version,
+        }),
+        (error: unknown) =>
+          error instanceof ConflictException &&
+          /cannot be rescheduled/.test(messageOf(error)),
       );
     });
 
@@ -1148,6 +1318,7 @@ interface Fixture {
   buyerId: string;
   localDate: string;
   todayLocal: string;
+  tomorrowLocal: string;
 }
 
 function jakartaLocalDate(daysFromNow: number): string {
@@ -1236,6 +1407,7 @@ async function createFixture(pool: Pool): Promise<Fixture> {
     buyerId,
     localDate: jakartaLocalDate(2),
     todayLocal: jakartaLocalDate(0),
+    tomorrowLocal: jakartaLocalDate(1),
   };
 }
 

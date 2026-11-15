@@ -14,27 +14,24 @@ import {
 import { Type } from 'class-transformer';
 
 const LOCAL_DATE = /^\d{4}-\d{2}-\d{2}$/;
+const ISO_INSTANT =
+  /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d{1,9})?)?(Z|[+-]\d{2}:\d{2})$/;
 
 export class CreatePickupSlotDto {
   @ApiProperty({
     format: 'date-time',
-    description: 'Slot start (UTC instant); must be in the future',
+    description:
+      'Slot start (UTC instant). May already have passed as long as the window still ends in the future, so a slot that has just begun can still be created.',
   })
-  @Matches(
-    /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d{1,9})?)?(Z|[+-]\d{2}:\d{2})$/,
-    { message: 'startsAt must be an ISO-8601 timestamp' },
-  )
+  @Matches(ISO_INSTANT, { message: 'startsAt must be an ISO-8601 timestamp' })
   startsAt!: string;
 
   @ApiProperty({
     format: 'date-time',
     description:
-      'Slot end (UTC instant); must be after startsAt, same tenant local day',
+      'Slot end (UTC instant); must be after startsAt, same tenant local day, and still in the future',
   })
-  @Matches(
-    /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d{1,9})?)?(Z|[+-]\d{2}:\d{2})$/,
-    { message: 'endsAt must be an ISO-8601 timestamp' },
-  )
+  @Matches(ISO_INSTANT, { message: 'endsAt must be an ISO-8601 timestamp' })
   endsAt!: string;
 
   @ApiProperty({ minimum: 1, maximum: 2147483647 })
@@ -74,6 +71,24 @@ export class UpdatePickupSlotDto {
   @IsOptional()
   @IsIn(['open', 'closed'])
   status?: 'open' | 'closed';
+
+  @ApiPropertyOptional({
+    format: 'date-time',
+    description:
+      'New window start (UTC instant). Omit to keep the stored value. Only allowed while the slot has no reserved orders: moving a window that already took bookings needs buyer consent through a schedule proposal.',
+  })
+  @IsOptional()
+  @Matches(ISO_INSTANT, { message: 'startsAt must be an ISO-8601 timestamp' })
+  startsAt?: string;
+
+  @ApiPropertyOptional({
+    format: 'date-time',
+    description:
+      'New window end (UTC instant). Omit to keep the stored value. The resulting window must still be open and fit the operating hours.',
+  })
+  @IsOptional()
+  @Matches(ISO_INSTANT, { message: 'endsAt must be an ISO-8601 timestamp' })
+  endsAt?: string;
 
   @ApiProperty({
     minimum: 1,
