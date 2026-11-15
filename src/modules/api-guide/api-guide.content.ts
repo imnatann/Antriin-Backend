@@ -261,6 +261,7 @@ export const GUIDE_PERMISSIONS: Block[] = [
       '`GET /tenants`, `GET /tenants/{id}`, `GET /tenants/{id}/menu`, `GET /tenants/{id}/menu/items/{itemId}`',
       '`GET /tenants/{id}/availability`, `GET /tenants/{id}/operating-hours`, `GET /tenants/{id}/reviews`',
       '`GET /search`, `GET /recommendations`',
+      '`GET /media/limits`, `GET /media/{id}`',
       '`POST /webhooks/payments/{provider}` (server-to-server, memakai signature)',
     ],
   },
@@ -349,6 +350,21 @@ export const GUIDE_FLOWS: Block[] = [
     kind: 'p',
     text: 'Sinyal risiko adalah bukti untuk ditinjau manusia, bukan sanksi. Tidak ada endpoint yang memblokir akun, menyembunyikan ulasan, atau memindahkan uang atas dasar skor. Antrean default `state=pending` (belum diputuskan); keputusan bersifat append-only sehingga riwayatnya utuh dan keputusan terbaru menjadi status saat ini.',
   },
+  { kind: 'h3', text: '4.8 Unggah gambar' },
+  {
+    kind: 'p',
+    text: 'Foto menu, logo tenant, dan bukti kasus diunggah ke API, bukan ke penyimpanan eksternal. Alurnya: `GET /media/limits` untuk mengetahui batas, lalu `POST /media` sebagai `multipart/form-data` dengan satu part bernama `file` dan `purpose` sebagai query, lalu pakai `data.url` dari respons sebagai `imageRef` pada `PATCH /tenants/{id}/menu/items/{itemId}`.',
+  },
+  {
+    kind: 'list',
+    items: [
+      'Tipe yang diterima hanya `image/jpeg`, `image/png` dan `image/webp`. Server mencocokkan isi berkas dengan tipe yang diklaim klien; berkas yang menyamar ditolak 415 `MEDIA_TYPE_MISMATCH`.',
+      'Batas ukuran default 5 MiB (`MEDIA_MAX_BYTES`). Klien sebaiknya memeriksa ukuran sebelum mengunggah agar tidak membuang kuota.',
+      '`GET /media/{id}` publik dan tidak memerlukan token — pembeli harus bisa melihat foto menu. Respons membawa `ETag` dari checksum berkas dan `Cache-Control: immutable`; kirim `If-None-Match` untuk mendapat 304.',
+      '`DELETE /media/{id}` hanya boleh oleh pengunggahnya. Aset orang lain menjawab 404, bukan 403, supaya endpoint tidak bisa dipakai menebak keberadaan berkas.',
+      'Gambar disimpan apa adanya: EXIF (termasuk lokasi) tidak dibuang dan tidak ada thumbnail. Jangan mengandalkan server untuk menyanitasi metadata.',
+    ],
+  },
 ];
 
 export const GUIDE_GAPS: Block[] = [
@@ -357,7 +373,7 @@ export const GUIDE_GAPS: Block[] = [
     kind: 'list',
     items: [
       '**Provider nyata**: OTP, QRIS, refund bank dan payout semuanya sandbox/stub. Webhook pembayaran hanya menerima event sandbox bertanda tangan.',
-      '**Upload file** (foto menu, bukti kasus): belum ada endpoint maupun storage. `menu_items.image_ref` masih menerima URL eksternal apa adanya.',
+      '**Penyimpanan berkas terkelola**: `POST /media` menulis ke disk lokal (`MEDIA_ROOT`), bukan object storage. Berkas tidak ikut berpindah bila container dibangun ulang dan tidak dibagi antar-instance — jangan andalkan untuk deployment multi-host. Belum ada moderasi gambar, thumbnail, atau pembersihan otomatis berkas yang dihapus.',
       '**Notifikasi push/email/WhatsApp**: hanya notifikasi dalam aplikasi (`GET /me/notifications`). `POST /me/devices` baru mencatat perangkat; belum ada provider push yang mengirim.',
       '**Realtime/WebSocket**: belum ada; polling adalah satu-satunya cara.',
       '**Pembatalan pesanan oleh pembeli**: belum ada endpoint. Jalur resmi adalah membuka kasus (`POST /orders/{id}/cases`) yang diputuskan pengelola kampus.',

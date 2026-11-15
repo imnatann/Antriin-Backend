@@ -113,4 +113,15 @@ export const environmentSchema = Joi.object({
     then: Joi.string().min(32).required(),
     otherwise: Joi.string().allow('').optional(),
   }),
+  // Image uploads (POST /media) are written to this local directory and served
+  // back from GET /media/{id}. Absolute paths are recommended outside local
+  // development; the directory is created on boot if it does not exist.
+  MEDIA_ROOT: Joi.string().default('./storage/media'),
+  // Upper bound for one uploaded image. The database CHECK allows at most
+  // MEDIA_ABSOLUTE_MAX_BYTES (20 MiB); this can only narrow it.
+  MEDIA_MAX_BYTES: Joi.number()
+    .integer()
+    .min(1024)
+    .max(20971520)
+    .default(5242880),
 });

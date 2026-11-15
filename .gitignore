@@ -10,3 +10,6 @@ coverage/
 
 # Seed credentials output (live bearer tokens)
 seed-output*.json
+
+# Locally uploaded images (MEDIA_ROOT default)
+storage/

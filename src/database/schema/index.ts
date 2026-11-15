@@ -96,3 +96,4 @@ export * from './payouts';
 export * from './reviews';
 export * from './preferences';
 export * from './risk';
+export * from './media';

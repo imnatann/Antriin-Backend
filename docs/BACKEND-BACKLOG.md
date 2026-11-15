@@ -156,7 +156,33 @@ Temuan integrasi yang diperbaiki saat verifikasi: `CampusesModule` memakai `Auth
 
 Bukti: `npm test` pada database baru (migrasi `0000..0011`) menjalankan **555 tes: 552 lulus, 0 gagal, 3 skip**; suite yang sama dijalankan dua kali berturut-turut pada database yang sama tetap 552/0 (tidak order-dependent). Typecheck, lint, format dan build lulus. API boot dengan `SWAGGER_ENABLED=true` dan seluruh endpoint baru diuji lewat HTTP nyata memakai data seed.
 
-Belum selesai dan tidak diklaim: provider OTP/QRIS/push nyata, upload file, WebSocket, pembatalan pesanan oleh pembeli, verifikasi DNS domain, detektor sinyal risiko, ekspor PDF dan penjadwalan laporan.
+Belum selesai dan tidak diklaim: provider OTP/QRIS/push nyata, object storage untuk media, WebSocket, pembatalan pesanan oleh pembeli, verifikasi DNS domain, detektor sinyal risiko, ekspor PDF dan penjadwalan laporan.
+
+## Status implementasi 15 November 2026 — unggah gambar
+
+Celah terakhir yang memblokir foto menu: sebelumnya `menu_items.image_ref` hanya menyimpan string yang harus disediakan klien sendiri, dan backend tidak punya storage sama sekali. Sekarang gambar diunggah ke API, disimpan di disk lokal, dan disajikan kembali oleh API.
+
+| Endpoint             | Auth   | Keterangan                                     |
+| -------------------- | ------ | ---------------------------------------------- |
+| `GET /media/limits`  | —      | Batas ukuran, tipe yang diterima, `purpose`    |
+| `POST /media`        | bearer | Unggah satu gambar (multipart, part `file`)    |
+| `GET /media/{id}`    | —      | Alirkan byte, `ETag` + `immutable`, dukung 304 |
+| `DELETE /media/{id}` | bearer | Hapus lunak milik sendiri                      |
+
+Perubahan schema: migrasi **`0012`** menambah tabel `media_assets` (pemilik, `purpose`, `storage_key` unik, `content_type`, `byte_size`, `checksum_sha256`, `width`/`height`, `deleted_at`) dengan CHECK untuk `purpose`, tipe, ukuran, format checksum dan pasangan dimensi. Konfigurasi baru: `MEDIA_ROOT`, `MEDIA_MAX_BYTES`.
+
+Keputusan yang dijaga:
+
+- **Tipe tidak dipercaya dari klien.** `image-probe.ts` membaca magic bytes dan ukuran dari header; berkas yang menyamar ditolak 415 `MEDIA_TYPE_MISMATCH`. SVG ditolak karena SVG adalah markup yang bisa dieksekusi.
+- **Kunci berkas dibuat server** (`YYYY/MM/<uuid>.<ext>`). Klien tidak menyumbang bagian path apa pun, sehingga tidak ada jalur keluar dari `MEDIA_ROOT` atau menimpa berkas pengguna lain.
+- **Hapus lunak, bukan hapus fisik.** Baris menjadi tombstone dan `GET` langsung berhenti melayani; berkas dibiarkan untuk pembersihan operator agar bukti tidak hilang diam-diam.
+- **Aset orang lain menjawab 404, bukan 403**, supaya endpoint tidak bisa dipakai menebak keberadaan unggahan orang lain.
+
+Batas yang tidak diklaim: penyimpanan masih disk lokal (bukan object storage, tidak dibagi antar-instance dan hilang saat container dibangun ulang), tanpa moderasi gambar, tanpa thumbnail/resize, EXIF tidak dibuang, dan belum ada pembersihan otomatis tombstone. Detail: [modules/media.md](modules/media.md).
+
+Bukti: `npm test` pada database baru (migrasi `0000..0012`) menjalankan **583 tes: 580 lulus, 0 gagal, 3 skip**; suite yang sama dijalankan dua kali pada database yang sama tetap 580/0. Typecheck, lint, format dan build lulus. API dijalankan dengan `SWAGGER_ENABLED=true`: `/docs`, `/api/v1/guide`, `/guide.md` dan `/guide/openapi.json` 200, **139 operasi** di OpenAPI dengan **0 tanpa tag** (tag baru `Media`, 4 operasi).
+
+Alur unggah diuji lewat HTTP nyata dengan sesi asli, bukan stub: `POST /media` → 201 (PNG 2×2, `width`/`height`/checksum benar), `GET /media/{id}` mengembalikan byte identik dengan `ETag` dan `304` pada `If-None-Match`, PNG yang dideklarasikan `image/jpeg` ditolak 415 `MEDIA_TYPE_MISMATCH`, HTML yang dideklarasikan `image/png` ditolak 415 `MEDIA_CONTENT_UNRECOGNISED`, `DELETE` → 204 lalu `GET` → 404, dan berkas benar-benar tertulis di `MEDIA_ROOT`.
 
 ## Paket kerja dan Jira
 

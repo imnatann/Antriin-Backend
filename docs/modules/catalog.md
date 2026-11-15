@@ -41,7 +41,7 @@ total_minor       = subtotal_minor   (pilot tanpa fee/pajak/diskon — PILOT-POL
 - **Audit wajib untuk perubahan berdampak uang/status** (keputusan root, AGENTS.md "keputusan pengelola"): `AuditService.append` dipanggil dalam transaksi yang sama untuk perubahan harga item (`tenant.menu.item.price_changed`), perubahan harga delta opsi (`tenant.menu.option.price_changed`), transisi status item (`tenant.menu.item.sold_out` / `.available` / `.archived` / `.restored`), dan arsip/reaktivasi kategori, grup opsi, choice (`tenant.menu.category|option_group|option.archived|restored`). `reason` (1..300 char) **wajib dari DTO** untuk mutasi tersebut (body PATCH, atau query param `reason` untuk DELETE); actor selalu dari sesi, tidak pernah dari body. Metadata audit hanya nilai non-sensitif (harga/status lama→baru). Create dan perubahan nama/deskripsi/gambar/urutan tidak diaudit.
 - Unique: nama kategori unik per tenant, nama choice unik per grup → pelanggaran 23505 dipetakan ke 409.
 - `updated_at` diset eksplisit (`now()`) pada setiap mutasi; tidak ada trigger DB. Timestamp respons memakai format mikrodetik UTC langsung dari PostgreSQL (`to_char(... US"Z")`), tidak pernah di-round-trip lewat JS `Date` (konvensi root D7).
-- `imageRef` (opsional, <=500 char) adalah referensi media opaque; kirim string kosong untuk menghapus. Pipeline media bukan milik slice ini.
+- `imageRef` (opsional, <=500 char) adalah referensi media opaque; kirim string kosong untuk menghapus. Nilainya bisa berupa path dari `POST /media` (lihat [media.md](media.md)) atau URL eksternal apa pun — katalog tidak memvalidasi maupun mengambil gambarnya.
 
 ### Discovery pembeli (publik, tanpa auth)
 
@@ -88,7 +88,7 @@ Aturan grup opsi: `0 <= minSelections <= maxSelections`, `maxSelections >= 1`, k
 ## Batasan
 
 - Kategori tidak punya guard optimistic concurrency (schema tanpa kolom version); dua rename/reorder bersamaan bisa saling menimpa (**last-write-wins**). Risiko ini DITERIMA root untuk pilot; usulan menambah kolom `menu_categories.version` lewat migrasi baru DICATAT sebagai pekerjaan schema wave berikutnya (bukan wave ini, milik root/schema-fixer).
-- `image_ref` hanya menyimpan referensi; tidak ada upload/validasi media.
+- `image_ref` hanya menyimpan referensi string; katalog tidak mengunggah, mengambil, atau memvalidasi gambarnya. Unggah tersedia terpisah di [media.md](media.md), tetapi nilai `imageRef` tidak diperiksa terhadap tabel `media_assets`.
 - Pencarian hanya substring nama item (bukan deskripsi/kategori), tanpa pagination di atas cap 200; rekomendasi/pencarian lanjutan di luar slice ini (requirement 3.2 poin 4).
 - `quote` belum dikonsumsi HTTP; slice order yang akan memanggilnya dalam transaksi checkout bersama reserve + debit wallet.
 

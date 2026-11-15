@@ -85,6 +85,13 @@
       "when": 1794627244323,
       "tag": "0011_fine_mongu",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1794745592235,
+      "tag": "0012_cute_shinko_yamashiro",
+      "breakpoints": true
     }
   ]
 }

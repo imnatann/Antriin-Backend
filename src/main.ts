@@ -8,6 +8,7 @@ import {
 } from '@nestjs/platform-fastify';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import helmet from '@fastify/helmet';
+import multipart from '@fastify/multipart';
 import { Logger } from 'nestjs-pino';
 import { AppModule } from './app.module';
 import { ApiExceptionFilter } from './common/api-exception.filter';
@@ -23,6 +24,16 @@ async function bootstrap() {
   app.useLogger(app.get(Logger));
   const config = app.get(ConfigService);
   await app.register(helmet, helmetOptions);
+  // Image uploads (POST /media) are the only multipart routes. The size limit is
+  // applied here so an oversized body is rejected while streaming rather than
+  // after it has been buffered; MediaService re-checks the same bound.
+  await app.register(multipart, {
+    limits: {
+      fileSize: config.getOrThrow<number>('MEDIA_MAX_BYTES'),
+      files: 1,
+      fields: 0,
+    },
+  });
   app.enableCors({
     origin: config
       .getOrThrow<string>('CORS_ORIGINS')
