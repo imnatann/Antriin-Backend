@@ -398,4 +398,55 @@ export const orderPageSchema = {
   required: ['data', 'meta'],
 };
 
+/**
+ * Buyer-cancellation outcome: the cancelled order plus the single pending
+ * refund attached to it. `refund.status` is never 'succeeded' here — the
+ * refund stays pending until the provider confirms it (money never moves on
+ * the cancellation request itself).
+ */
+export const orderCancellationSchema = {
+  type: 'object',
+  properties: {
+    orderId: { type: 'string', format: 'uuid' },
+    orderNumber: {
+      type: 'string',
+      example: 'AN-20261112-7K3M2Q',
+      pattern: '^AN-[0-9]{8}-[0-9A-HJKMNP-TV-Z]{6}$',
+    },
+    status: { type: 'string', enum: ['cancelled'] },
+    version: { type: 'integer', minimum: 1 },
+    cancelledAt: { type: 'string', format: 'date-time' },
+    refund: {
+      type: 'object',
+      properties: {
+        id: { type: 'string', format: 'uuid' },
+        status: {
+          type: 'string',
+          enum: [
+            'requested',
+            'under_review',
+            'submitted',
+            'processing',
+            'succeeded',
+            'failed',
+            'needs_assistance',
+          ],
+        },
+        amountMinor: { type: 'string', pattern: '^[1-9][0-9]{0,37}$' },
+        currency: { type: 'string', enum: ['IDR'] },
+        requestedAt: { type: 'string', format: 'date-time' },
+      },
+      required: ['id', 'status', 'amountMinor', 'currency', 'requestedAt'],
+    },
+  },
+  required: [
+    'orderId',
+    'orderNumber',
+    'status',
+    'version',
+    'cancelledAt',
+    'refund',
+  ],
+};
+
 export type OrderStatusValue = OrderStatus;

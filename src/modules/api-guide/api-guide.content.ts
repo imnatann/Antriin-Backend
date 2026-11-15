@@ -212,7 +212,11 @@ export const GUIDE_PERMISSIONS: Block[] = [
   },
   {
     kind: 'p',
-    text: 'Permission staf bersifat interseksi: role harus mengizinkan permission itu **dan** membership harus memberikannya secara eksplisit. `tenant.finance.read`, `tenant.bank_account.manage`, `tenant.payout.request` dan `tenant.settings.manage` hanya untuk owner terverifikasi — jangan tampilkan menu rekening/pencairan/profil tenant untuk role lain. `GET /me` mengembalikan permission efektif, jadi pakai nilai itu alih-alih menyimpulkan role sendiri.',
+    text: 'Permission staf bersifat interseksi: role harus mengizinkan permission itu **dan** membership harus memberikannya secara eksplisit. `tenant.finance.read`, `tenant.bank_account.manage`, `tenant.payout.request`, `tenant.settings.manage` dan `tenant.staff.manage` hanya untuk owner terverifikasi — jangan tampilkan menu rekening/pencairan/profil/staf untuk role lain. `GET /me` mengembalikan permission efektif, jadi pakai nilai itu alih-alih menyimpulkan role sendiri.',
+  },
+  {
+    kind: 'p',
+    text: 'Menambah staf dilakukan lewat undangan (`POST /tenants/{id}/staff/invites`), bukan dengan menulis membership langsung. Undangan mengembalikan token **sekali**; belum ada pengiriman email, jadi pemilik menyerahkannya sendiri. Penerima memanggil `POST /tenant-invites/{token}/accept` dengan sesinya sendiri.',
   },
   { kind: 'h3', text: '3.2 Kampus (pengelola)' },
   {
@@ -279,8 +283,10 @@ export const GUIDE_FLOWS: Block[] = [
     lang: 'text',
     text: [
       'paid_awaiting_tenant -> confirmed -> preparing -> ready_for_pickup -> completed',
-      '                     |-> declined      (tenant menolak)',
-      '                     |-> cancelled     (lewat keputusan kasus/refund, bukan endpoint tenant)',
+      '        |            |',
+      '        |            |-> declined      (tenant menolak)',
+      '        |-> cancelled  (pembeli membatalkan sendiri, selama tenant belum bertindak)',
+      '                     |-> cancelled     (lewat keputusan kasus/refund)',
     ].join('\n'),
   },
   {
@@ -290,6 +296,7 @@ export const GUIDE_FLOWS: Block[] = [
       'Tenant: `POST /tenants/{tenantId}/orders/{orderId}/confirm|decline|prepare|ready`.',
       'Serah terima: `POST /tenants/{tenantId}/pickup/verification` (cek kode, tanpa efek) lalu `POST /tenants/{tenantId}/pickup/handovers` (menutup order, hanya sekali).',
       'Pembeli memegang kode lewat `GET /orders/{orderId}/pickup-credential`.',
+      'Pembeli dapat membatalkan sendiri lewat `POST /orders/{orderId}/cancellation`, **hanya** selama order masih `paid_awaiting_tenant` dan window pickup belum mulai. Uang tidak langsung kembali: pembatalan membuat refund `requested` penuh yang baru mengkredit wallet setelah provider menyatakan sukses. Setelah tenant bertindak, jalurnya kasus kampus.',
     ],
   },
   { kind: 'h3', text: '4.2 Usulan perubahan jadwal' },
@@ -362,7 +369,36 @@ export const GUIDE_FLOWS: Block[] = [
       'Batas ukuran default 5 MiB (`MEDIA_MAX_BYTES`). Klien sebaiknya memeriksa ukuran sebelum mengunggah agar tidak membuang kuota.',
       '`GET /media/{id}` publik dan tidak memerlukan token — pembeli harus bisa melihat foto menu. Respons membawa `ETag` dari checksum berkas dan `Cache-Control: immutable`; kirim `If-None-Match` untuk mendapat 304.',
       '`DELETE /media/{id}` hanya boleh oleh pengunggahnya. Aset orang lain menjawab 404, bukan 403, supaya endpoint tidak bisa dipakai menebak keberadaan berkas.',
-      'Gambar disimpan apa adanya: EXIF (termasuk lokasi) tidak dibuang dan tidak ada thumbnail. Jangan mengandalkan server untuk menyanitasi metadata.',
+      'Metadata kamera (EXIF/XMP, termasuk koordinat GPS) dibuang sebelum berkas disimpan; profil warna ICC dipertahankan. Karena itu byteSize/checksumSha256/ETag menggambarkan byte tersimpan, bukan byte unggahan, dan metadataStripped menandai apakah ada yang dihapus.',
+      'Belum ada thumbnail dan belum ada moderasi: moderationStatus selalu unreviewed.',
+      'Berkas yang diunggah sebelum perubahan ini tidak di-backfill; metadatanya masih menempel.',
+    ],
+  },
+  { kind: 'h3', text: '4.9 Aliran peristiwa (SSE)' },
+  {
+    kind: 'p',
+    text: 'GET /events/stream membuka aliran text/event-stream berisi notifikasi baru untuk pemanggil. Ini satu arah: tidak ada WebSocket, tidak ada kanal dua arah, dan tidak ada pengiriman perintah lewat aliran ini.',
+  },
+  {
+    kind: 'list',
+    items: [
+      'Token boleh dikirim lewat header Authorization atau query access_token (EventSource tidak bisa memasang header). Utamakan header: token pada URL bisa tercatat di log proxy.',
+      'Event yang dikirim: ready saat tersambung, notification untuk setiap baris baru, dan reconnect sebelum koneksi ditutup karena batas waktu (EVENTS_STREAM_MAX_SECONDS, default 15 menit).',
+      'Kirim Last-Event-ID (atau last_event_id) agar setelah putus klien hanya menerima yang baru. Tanpa itu, koneksi baru mulai dari peristiwa terbaru - riwayat tetap di GET /me/notifications.',
+      'Sumbernya tabel notifications, bukan bus di dalam proses, sehingga tetap benar saat API berjalan lebih dari satu instance.',
+    ],
+  },
+  { kind: 'h3', text: '4.10 Laporan dan ekspor' },
+  {
+    kind: 'p',
+    text: 'Laporan tersedia sebagai CSV dan PDF dengan data langsung: GET /tenants/{id}/reports/sales.csv|pdf dan GET /campuses/{id}/reports/dashboard.csv|pdf. Untuk laporan berkala, daftarkan lewat POST .../reports/exports dengan schedule manual|daily|weekly dan scheduleHour (0..23, waktu lokal kampus).',
+  },
+  {
+    kind: 'list',
+    items: [
+      'Berkas ekspor tidak disimpan: GET .../reports/exports mengembalikan status dan downloadPath, dan unduhan selalu dirender ulang dari data terkini.',
+      'schedule=manual berarti sekali jalan; daily/weekly mengisi nextRunAt menurut zona waktu kampus.',
+      'Belum ada pengiriman laporan lewat email atau push - klien harus memuat halaman laporan.',
     ],
   },
 ];
@@ -374,12 +410,13 @@ export const GUIDE_GAPS: Block[] = [
     items: [
       '**Provider nyata**: OTP, QRIS, refund bank dan payout semuanya sandbox/stub. Webhook pembayaran hanya menerima event sandbox bertanda tangan.',
       '**Penyimpanan berkas terkelola**: `POST /media` menulis ke disk lokal (`MEDIA_ROOT`), bukan object storage. Berkas tidak ikut berpindah bila container dibangun ulang dan tidak dibagi antar-instance — jangan andalkan untuk deployment multi-host. Belum ada moderasi gambar, thumbnail, atau pembersihan otomatis berkas yang dihapus.',
-      '**Notifikasi push/email/WhatsApp**: hanya notifikasi dalam aplikasi (`GET /me/notifications`). `POST /me/devices` baru mencatat perangkat; belum ada provider push yang mengirim.',
-      '**Realtime/WebSocket**: belum ada; polling adalah satu-satunya cara.',
-      '**Pembatalan pesanan oleh pembeli**: belum ada endpoint. Jalur resmi adalah membuka kasus (`POST /orders/{id}/cases`) yang diputuskan pengelola kampus.',
-      '**Verifikasi kepemilikan domain email kampus**: `POST /campuses/{id}/email-domains/{domainId}/verify` mencatat keputusan pengelola, bukan pembuktian DNS otomatis.',
-      '**Produsen sinyal risiko**: belum ada detektor otomatis. Tabel `risk_signals` dan endpoint antreannya sudah ada, tetapi belum ada job yang mengisi sinyal.',
-      '**Penjadwalan laporan dan ekspor PDF**: hanya CSV (`/reports/sales.csv`, `/dashboard.csv`).',
+      '**Notifikasi push/email/WhatsApp**: hanya notifikasi dalam aplikasi (`GET /me/notifications`, atau aliran SSE `GET /events/stream`). `POST /me/devices` baru mencatat perangkat; belum ada provider push yang mengirim.',
+      '**Undangan staf lewat email**: `POST /tenants/{id}/staff/invites` mengembalikan token sekali dan pemilik menyerahkannya sendiri. Belum ada pengiriman email, jadi undangan tidak bisa sampai tanpa jalur manual.',
+      '**Realtime/WebSocket**: hanya Server-Sent Events satu arah (`GET /events/stream`). Tidak ada WebSocket dan tidak ada kanal dua arah; klien tetap perlu `GET /me/notifications` untuk riwayat dan `Last-Event-ID` untuk melanjutkan setelah putus.',
+      '**Pembatalan setelah tenant bertindak**: pembeli hanya bisa membatalkan sendiri selama order masih `paid_awaiting_tenant` dan window pickup belum mulai (`POST /orders/{id}/cancellation`). Setelah tenant mengonfirmasi atau menyiapkan, satu-satunya jalur adalah kasus (`POST /orders/{id}/cases`) yang diputuskan pengelola kampus.',
+      '**Verifikasi ulang DNS**: `POST .../email-domains/{domainId}/dns-verify` membaca TXT record sekali dan menyimpan hasilnya; tidak ada pengecekan berkala, sehingga TXT yang dihapus kemudian tidak mencabut `dnsVerifiedAt`.',
+      '**Ambang detektor risiko**: detektor berjalan tiap 15 menit dengan ambang tetap yang dipilih saat implementasi (10 ulasan/24 jam, pergeseran rating 1,0, 3 refund/24 jam, 3 perubahan status/24 jam). Angka ini belum dikalibrasi terhadap data nyata dan bukan kebijakan final.',
+      '**Berkas laporan tersimpan**: ekspor terjadwal mencatat status dan `downloadPath`, tetapi berkasnya tidak disimpan — unduhan selalu dirender ulang dari data terkini. Belum ada unduhan per-id ekspor, dan belum ada pengiriman laporan lewat email.',
     ],
   },
   {

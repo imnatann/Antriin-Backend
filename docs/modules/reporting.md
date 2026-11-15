@@ -10,9 +10,15 @@ Batas yang dijaga (REQUIREMENTS §3.8.8): definisi gross/net, fee, pajak, ekspor
 | ------ | --------------------------------------------- | ------------ | -------------------------- |
 | GET    | `/api/v1/tenants/:tenantId/reports/sales`     | staf tenant  | `tenant.sales.read`        |
 | GET    | `/api/v1/tenants/:tenantId/reports/sales.csv` | staf tenant  | `tenant.sales.read`        |
+| GET    | `/api/v1/tenants/:tenantId/reports/sales.pdf` | staf tenant  | `tenant.sales.read`        |
 | GET    | `/api/v1/campuses/:campusId/dashboard`        | campus admin | `campus.transactions.read` |
 | GET    | `/api/v1/campuses/:campusId/dashboard.csv`    | campus admin | `campus.transactions.read` |
+| GET    | `/api/v1/campuses/:campusId/dashboard.pdf`    | campus admin | `campus.transactions.read` |
 | GET    | `/api/v1/campuses/:campusId/transactions`     | campus admin | `campus.transactions.read` |
+| POST   | `/api/v1/tenants/:tenantId/reports/exports`   | staf tenant  | `tenant.sales.read`        |
+| POST   | `/api/v1/campuses/:campusId/reports/exports`  | campus admin | `campus.transactions.read` |
+| GET    | `/api/v1/tenants/:tenantId/reports/exports`   | staf tenant  | `tenant.sales.read`        |
+| GET    | `/api/v1/campuses/:campusId/reports/exports`  | campus admin | `campus.transactions.read` |
 
 Keduanya wajib menerima query `from` dan `to` (ISO 8601) dan memakai jendela **setengah terbuka** `[from, to)`.
 
@@ -79,6 +85,35 @@ Dua endpoint `.csv` memakai angka yang **sama** dengan endpoint JSON-nya — ked
 - `refunds` dan `cases` sudah membawa `campus_id` sendiri sehingga difilter langsung.
 - Antrean sinyal risiko/AI **tidak** ada di dashboard ini; modul `risk` punya endpoint sendiri ([risk.md](risk.md)).
 
+## Ekspor PDF
+
+`GET .../reports/sales.pdf` dan `GET .../reports/dashboard.pdf` merender **isi yang sama** dengan CSV (bagian dan total yang identik), hanya berbeda format. Header: `Content-Type: application/pdf`, `Content-Disposition: attachment` dengan nama berkas literal, `X-Content-Type-Options: nosniff`.
+
+PDF dibuat dengan `pdfkit` murni JavaScript — tidak ada headless browser, tidak ada proses eksternal.
+
+## Ekspor terjadwal
+
+`POST .../reports/exports`:
+
+```json
+{
+  "kind": "sales",
+  "format": "pdf",
+  "from": "2026-01-01",
+  "to": "2026-02-01",
+  "schedule": "daily",
+  "scheduleHour": 7
+}
+```
+
+- `kind` harus cocok dengan scope: `sales` untuk tenant, `dashboard` untuk kampus (400 `REPORT_EXPORT_KIND_SCOPE_MISMATCH`).
+- `scheduleHour` 0..23 **wajib** untuk `daily`/`weekly` dan **ditolak** untuk `manual`.
+- `nextRunAt` dihitung pada zona waktu kampus; `manual` berjalan sekali.
+
+**Berkas tidak disimpan.** Tabel `report_exports` menyimpan jadwal, status, dan `downloadPath`; byte-nya selalu dirender ulang dari data terkini saat diunduh. Alasannya: penyimpanan media hanya menerima `image/jpeg|png|webp`, sehingga menyimpan PDF berarti membuat jalur penyimpanan kedua. Konsekuensinya ekspor yang dijadwalkan tidak bisa dikirim lewat email dan tidak ada URL permanen per ekspor — keduanya pekerjaan berikutnya.
+
+Pelaksana jadwal adalah job worker `run-report-exports` (setiap 5 menit) yang memanggil `ReportingService.runDueExports()`. Job ini mengunci baris dengan `FOR UPDATE SKIP LOCKED`, memeriksa ulang izin pembuatnya, dan memajukan `nextRunAt` dari waktu jatuh tempo sebelumnya sehingga keterlambatan worker tidak menggeser jadwal.
+
 ## Kenapa tidak ada tabel laporan
 
-Laporan dihitung saat dibaca dari tabel transaksi. Requirement §7.5 meminta beban laporan dipisahkan dari transaksi kritis lewat read replica/projection; untuk volume pilot ini query agregat terindeks cukup, dan penambahan projection baru dicatat sebagai pekerjaan berikutnya bersama ekspor laporan dan penjadwalan.
+Laporan dihitung saat dibaca dari tabel transaksi. Requirement §7.5 meminta beban laporan dipisahkan dari transaksi kritis lewat read replica/projection; untuk volume pilot ini query agregat terindeks cukup. Yang tetap terbuka: read replica/projection, penyimpanan artefak laporan, pengiriman laporan lewat email, dan definisi finansial (gross/net/fee/pajak).

@@ -178,11 +178,43 @@ Keputusan yang dijaga:
 - **Hapus lunak, bukan hapus fisik.** Baris menjadi tombstone dan `GET` langsung berhenti melayani; berkas dibiarkan untuk pembersihan operator agar bukti tidak hilang diam-diam.
 - **Aset orang lain menjawab 404, bukan 403**, supaya endpoint tidak bisa dipakai menebak keberadaan unggahan orang lain.
 
-Batas yang tidak diklaim: penyimpanan masih disk lokal (bukan object storage, tidak dibagi antar-instance dan hilang saat container dibangun ulang), tanpa moderasi gambar, tanpa thumbnail/resize, EXIF tidak dibuang, dan belum ada pembersihan otomatis tombstone. Detail: [modules/media.md](modules/media.md).
+Batas yang tidak diklaim: penyimpanan masih disk lokal (bukan object storage, tidak dibagi antar-instance dan hilang saat container dibangun ulang), moderasi gambar belum ada (`moderationStatus` hanya status baca, tanpa scanner/endpoint), tanpa thumbnail/resize, metadata hanya dihapus pada unggahan baru (tanpa backfill), dan tombstone belum disapu otomatis. Detail: [modules/media.md](modules/media.md).
 
 Bukti: `npm test` pada database baru (migrasi `0000..0012`) menjalankan **583 tes: 580 lulus, 0 gagal, 3 skip**; suite yang sama dijalankan dua kali pada database yang sama tetap 580/0. Typecheck, lint, format dan build lulus. API dijalankan dengan `SWAGGER_ENABLED=true`: `/docs`, `/api/v1/guide`, `/guide.md` dan `/guide/openapi.json` 200, **139 operasi** di OpenAPI dengan **0 tanpa tag** (tag baru `Media`, 4 operasi).
 
 Alur unggah diuji lewat HTTP nyata dengan sesi asli, bukan stub: `POST /media` → 201 (PNG 2×2, `width`/`height`/checksum benar), `GET /media/{id}` mengembalikan byte identik dengan `ETag` dan `304` pada `If-None-Match`, PNG yang dideklarasikan `image/jpeg` ditolak 415 `MEDIA_TYPE_MISMATCH`, HTML yang dideklarasikan `image/png` ditolak 415 `MEDIA_CONTENT_UNRECOGNISED`, `DELETE` → 204 lalu `GET` → 404, dan berkas benar-benar tertulis di `MEDIA_ROOT`.
+
+## Status implementasi 15 November 2026 — lapisan operasional (gelombang B)
+
+Kontrak API sudah lengkap; yang tersisa adalah lapisan yang membuatnya bisa dioperasikan. Dua belas butir dikerjakan tanpa provider vendor.
+
+| Butir | Isi                                                                                                                                                             | Bukti                                       |
+| ----- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------- |
+| B1    | Job worker terjadwal: expiry top-up (60 s), purge idempotency (harian 03:15 UTC), sapu tombstone media (harian 03:45 UTC), ekspor laporan jatuh tempo (5 menit) | `test/jobs-maintenance`, `jobs-scheduler`   |
+| B2    | `POST /orders/{id}/cancellation` — pembatalan oleh pembeli sebelum tenant bertindak; refund penuh `requested`, wallet **tidak** dikredit                        | `test/orders-buyer-cancellation`            |
+| B3    | Rate limit global Redis: baca publik 120/menit per IP, baca terautentikasi 300/menit per user, tulis 60/menit; gagal-terbuka bila Redis mati                    | `test/rate-limit-guard`, `rate-limit-redis` |
+| B4    | Tiga detektor risiko (lonjakan rating, rantai refund/top-up, perubahan status tenant) yang menulis **sinyal saja**                                              | `test/jobs-risk-detectors`                  |
+| B5    | `POST .../email-domains/{id}/dns-verify` — bukti kepemilikan domain lewat TXT, terpisah dari attestation pengelola                                              | `test/campus-access`                        |
+| B6    | Laporan PDF + ekspor terjadwal (manual/daily/weekly)                                                                                                            | `test/reporting-pdf`, `reporting-exports`   |
+| B7    | `GET /events/stream` — SSE notifikasi, resume lewat `Last-Event-ID`                                                                                             | `test/events-http`                          |
+| B8    | Metadata kamera (EXIF/GPS) dibuang sebelum disimpan; `moderationStatus` hanya status baca                                                                       | `test/media-metadata-strip`                 |
+| B9    | `POST /me/deletion` dan `GET /me/export` — penutupan akun dengan pseudonimisasi, riwayat finansial dipertahankan                                                | `test/account-closure`                      |
+| B10   | `meta.unreadCount` dan filter `?unread=true` pada `GET /me/notifications`                                                                                       | `test/notifications-unread`                 |
+| B11   | `GET /metrics` format Prometheus, opsional dijaga `METRICS_TOKEN`                                                                                               | `test/metrics`                              |
+| B12   | Undangan staf: buat/baca/cabut/terima, token sekali pakai (hanya hash yang disimpan)                                                                            | `test/staff-invites`                        |
+
+Perubahan schema: migrasi **`0013`** menambah `tenant_staff_invites`, `report_exports`, `account_deletion_requests`, kolom DNS pada `campus_email_domains`, serta `metadata_stripped`/`thumbnail_key`/`moderation_status` pada `media_assets`. Konfigurasi baru: `METRICS_TOKEN`, `EVENTS_STREAM_MAX_SECONDS`.
+
+Keputusan yang dijaga:
+
+- **Detektor hanya menulis sinyal.** Tidak ada order, saldo, akun, atau status yang berubah karena skor; `dedupeKey` per kategori+subjek+bucket hari membuat satu temuan hanya menghasilkan satu sinyal.
+- **Attestation dan bukti DNS dipisah.** `verifiedAt` (saklar auth) tetap hanya berubah lewat keputusan pengelola; `dnsVerifiedAt` membuktikan kepemilikan tetapi tidak mengaktifkan domain.
+- **Pembatalan pembeli tidak mengkredit wallet.** Yang dibuat adalah refund `requested`; kredit tetap menunggu konfirmasi provider.
+- **Penutupan akun tidak menghapus baris.** Nama dipseudonimkan dan sesi dicabut; order/ledger/audit dipertahankan sesuai REQUIREMENTS §7.6, dengan `retainedSummary` yang mencatat alasannya.
+
+Bukti: `npm test` pada database baru (migrasi `0000..0013`) menjalankan **765 tes: 762 lulus, 0 gagal, 3 skip**; typecheck, lint, format dan build lulus.
+
+Batas yang tidak diklaim: provider OTP/QRIS/refund/payout/push, object storage, TLS/backup/monitoring, verifikasi DNS berkala, kalibrasi ambang detektor, penyimpanan artefak laporan, pengiriman laporan/undangan lewat email, thumbnail gambar, dan keputusan angka (fee, pajak, refund parsial, SLA).
 
 ## Paket kerja dan Jira
 

@@ -106,8 +106,30 @@ Hanya `displayName` (1–200 karakter, tidak boleh kosong setelah trim) yang dap
 - `DELETE` bersifat _soft_: `revoked_at` diisi. Baris dipertahankan agar riwayat perangkat tetap dapat diaudit.
 - Belum ada provider push yang membaca tabel ini. `POST /me/devices` hanya mencatat perangkat yang **diinginkan** klien.
 
+## Penutupan akun dan ekspor data
+
+| Method | Path                  | Auth |
+| ------ | --------------------- | ---- |
+| POST   | `/api/v1/me/deletion` | sesi |
+| GET    | `/api/v1/me/export`   | sesi |
+
+### `POST /me/deletion`
+
+Body opsional `{ reason }` (maks 500 karakter). Dalam satu transaksi: `users.status` menjadi `closed`, nama tampilan dipseudonimkan menjadi `Closed account <id8>`, seluruh `auth_sessions` dan `user_devices` dicabut, baris `account_deletion_requests` ditulis berisi `retainedSummary`, dan audit `user.account.closed` dicatat.
+
+**Tidak ada baris yang dihapus.** Order, ledger, ulasan dan audit tetap utuh — REQUIREMENTS §7.6 mewajibkan data transaksi dipertahankan untuk rekonsiliasi. `retainedSummary` mencatat per entitas berapa baris yang dipertahankan dan alasannya, supaya pembaca berikutnya tidak menebak.
+
+Akun yang ditutup tidak bisa login lagi karena `AuthService` mensyaratkan `users.status = 'active'`. Memanggil ulang bersifat idempoten: `requestId` dan `closedAt` sama, tanpa baris atau audit kedua.
+
+### `GET /me/export`
+
+Mengembalikan data pemanggil sebagai JSON: profil (telepon **tersamarkan**), ringkasan order per status beserta total per currency, saldo wallet, maksimal 500 transaksi ledger, maksimal 500 ulasan milik sendiri, serta jumlah notifikasi. Tidak pernah memuat token, ciphertext, identity hash, atau nomor telepon lengkap.
+
+Bila ada data terpotong, respons menandainya (`truncated`) alih-alih diam-diam memotong.
+
 ## Yang sengaja belum ada
 
 - Mengubah nomor telepon atau email (butuh alur verifikasi ulang).
-- Menghapus akun. Data transaksi/audit wajib dipertahankan (REQUIREMENTS §7.6), jadi penghapusan akun adalah pseudonimisasi yang butuh keputusan produk.
+- Ekspor dengan pagination/streaming: batasnya 500 baris per jenis dan ditandai, bukan seluruh riwayat.
+- Penghapusan fisik data finansial atau audit; yang ada hanya penutupan + pseudonimisasi.
 - Pengiriman push/email/WhatsApp.

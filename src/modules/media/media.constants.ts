@@ -31,6 +31,21 @@ export const MEDIA_PURPOSES = [
 
 export type MediaPurpose = (typeof MEDIA_PURPOSES)[number];
 
+/**
+ * Review state of a stored image. Read-only for now: nothing in the API moves
+ * an asset out of 'unreviewed', because there is no scanner integration and no
+ * permission to decide on one yet. The column exists so a future human review
+ * (and the audit around it) has somewhere to record the outcome, and the enum
+ * mirrors the database CHECK.
+ */
+export const MEDIA_MODERATION_STATUSES = [
+  'unreviewed',
+  'clear',
+  'flagged',
+] as const;
+
+export type MediaModerationStatus = (typeof MEDIA_MODERATION_STATUSES)[number];
+
 /** Extension written to disk for each accepted type. */
 export const MEDIA_EXTENSIONS: Record<MediaContentType, string> = {
   'image/jpeg': 'jpg',

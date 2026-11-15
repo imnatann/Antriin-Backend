@@ -10,6 +10,7 @@ import { CampusAccessService } from './campus-access.service';
 import { CampusEmailDomainsController } from './campus-email-domains.controller';
 import { CampusEmailDomainsService } from './campus-email-domains.service';
 import { CampusProvisioningService } from './campus-provisioning.service';
+import { DNS_RESOLVER, NodeDnsResolver } from './dns-resolver';
 import { CampusesController } from './campuses.controller';
 import { CampusesService } from './campuses.service';
 
@@ -33,6 +34,9 @@ import { CampusesService } from './campuses.service';
     CampusProvisioningService,
     CampusAccessService,
     CampusEmailDomainsService,
+    // Real DNS lookups behind a port so the domain-ownership check is testable
+    // without pretending a lookup happened.
+    { provide: DNS_RESOLVER, useClass: NodeDnsResolver },
   ],
   exports: [CampusesService, CampusProvisioningService],
 })

@@ -82,8 +82,25 @@ ingestSignal({ campusId, tenantId?, subjectType, subjectId, category, score, mod
 
 Idempoten lewat `dedupe_key`: pemanggilan ulang detektor yang sama mengembalikan `{ created: false, signalId }` tanpa baris baru.
 
+## Detektor otomatis
+
+`RiskDetectorService` (worker-only, `src/modules/risk/risk-detectors.service.ts`) menjalankan tiga detektor dan menulis **sinyal saja** — tidak ada order, saldo, atau status yang diubah. Dijalankan job `run-risk-detectors` setiap 15 menit.
+
+| Kategori               | Subjek | Pemicu (ambang awal)                                                                                                           |
+| ---------------------- | ------ | ------------------------------------------------------------------------------------------------------------------------------ |
+| `rating_anomaly`       | tenant | ≥ 10 ulasan `visible` dalam 24 jam, atau rata-rata bergeser ≥ 1,0 poin dibanding baseline 30 hari (baseline butuh ≥ 10 ulasan) |
+| `payment_refund_chain` | buyer  | ≥ 3 refund dalam 24 jam, atau ≥ 2 refund **dan** ≥ 5 intent top-up dalam 24 jam                                                |
+| `tenant_status_change` | tenant | ≥ 3 `audit_events` aksi `tenant.status_changed` dalam 24 jam                                                                   |
+
+Setiap detektor dibatasi jendela 24 jam, kandidat maksimum 50, dan sampel maksimum 10, sehingga tidak ada tabel yang dipindai tanpa batas.
+
+`dedupeKey` = `kategori:subjectType:[campus:]subjectId:bucket-hari-UTC`. Karena itu satu temuan hanya menghasilkan satu sinyal per hari; menjalankan job berkali-kali tidak menambah baris.
+
+Ambang di atas dipilih saat implementasi dan **belum dikalibrasi** terhadap data nyata; nilainya diekspor sebagai konstanta agar mudah ditinjau.
+
 ## Yang sengaja belum ada
 
-- **Detektor otomatis.** Belum ada job yang memindai lonjakan rating atau rantai top-up→pembayaran→refund dan menulis sinyal. Tabel dan antreannya sudah siap; pemicunya belum.
+- **Kalibrasi ambang.** Detektor sudah berjalan, tetapi ambangnya masih pilihan awal (lihat tabel di atas), bukan hasil analisis data.
+- **Notifikasi ke pengelola.** Sinyal baru masuk antrean tanpa memberi tahu siapa pun; belum ada push/email untuk sinyal.
 - **Sanksi dan tindak lanjut.** Tidak akan ditambahkan tanpa keputusan produk eksplisit: REQUIREMENTS §3.10.5 melarang skor menjadi dasar sanksi otomatis.
 - **Menutup sinyal.** Karena keputusan append-only, sinyal selalu punya jejak; "menutup" berarti mencatat keputusan baru, bukan menghapus.

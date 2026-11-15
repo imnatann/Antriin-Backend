@@ -57,7 +57,23 @@ export const campusEmailDomains = pgTable(
       .references(() => campuses.id, { onDelete: 'restrict' }),
     domain: varchar('domain', { length: 253 }).notNull(),
     active: boolean('active').default(true).notNull(),
+    // Set by a campus manager's attestation (POST .../verify).
     verifiedAt: timestamp('verified_at', { withTimezone: true }),
+    // Migration 0013: proof of ownership by DNS. `dns_token` is the value the
+    // campus must publish as a TXT record; a successful lookup stamps
+    // `dns_verified_at`. Keeping this separate from `verified_at` keeps an
+    // attestation from ever being mistaken for proof.
+    // A default keeps the column self-sufficient: the service always supplies
+    // its own random token, but a direct insert (fixtures, migrations, an
+    // operator) gets a unique value instead of failing the NOT NULL.
+    dnsToken: varchar('dns_token', { length: 64 })
+      .default(
+        sql`substr(md5(random()::text || clock_timestamp()::text), 1, 32)`,
+      )
+      .notNull(),
+    dnsVerifiedAt: timestamp('dns_verified_at', { withTimezone: true }),
+    dnsCheckedAt: timestamp('dns_checked_at', { withTimezone: true }),
+    dnsLastError: varchar('dns_last_error', { length: 300 }),
     ...timestamps(),
   },
   (table) => [

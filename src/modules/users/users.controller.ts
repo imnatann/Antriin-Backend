@@ -26,6 +26,7 @@ import { AuthGuard, CurrentUser } from '../auth/auth.guard';
 import type { AuthenticatedPrincipal } from '../auth/auth.guard';
 import { UsersService } from './users.service';
 import {
+  CloseAccountDto,
   RegisterDeviceDto,
   UpdateNotificationPreferencesDto,
   UpdateProfileDto,
@@ -149,6 +150,135 @@ const deviceSchema = {
     updatedAt: { type: 'string', format: 'date-time' },
   },
   required: ['id', 'platform', 'label', 'lastSeenAt', 'createdAt', 'updatedAt'],
+};
+
+const retentionEntrySchema = {
+  type: 'object',
+  properties: {
+    entity: { type: 'string' },
+    count: { type: 'integer' },
+    reason: { type: 'string' },
+  },
+  required: ['entity', 'reason'],
+};
+
+const closureSchema = {
+  type: 'object',
+  properties: {
+    status: { type: 'string', enum: ['closed'] },
+    displayName: {
+      type: 'string',
+      description: 'The pseudonymised name the closed account now carries',
+    },
+    closedAt: { type: 'string', format: 'date-time' },
+    requestId: { type: 'string', format: 'uuid' },
+    revokedSessions: {
+      type: 'integer',
+      description: 'Sessions revoked by this call; 0 when it was idempotent',
+    },
+    retained: {
+      type: 'object',
+      additionalProperties: true,
+      description:
+        'account_deletion_requests.retained_summary: what was kept and why',
+    },
+  },
+  required: [
+    'status',
+    'displayName',
+    'closedAt',
+    'requestId',
+    'revokedSessions',
+    'retained',
+  ],
+};
+
+const exportSchema = {
+  type: 'object',
+  properties: {
+    exportedAt: { type: 'string', format: 'date-time' },
+    profile: {
+      type: 'object',
+      additionalProperties: true,
+      description: 'Profile with the phone number masked',
+    },
+    orders: {
+      type: 'object',
+      additionalProperties: true,
+      description:
+        'Order count by status and the total per currency, minor units',
+    },
+    wallet: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          currency: { type: 'string' },
+          availableMinor: { type: 'string' },
+        },
+        required: ['currency', 'availableMinor'],
+      },
+    },
+    transactions: {
+      type: 'object',
+      additionalProperties: true,
+      description: 'Bounded ledger transaction list with a truncated flag',
+    },
+    reviews: { type: 'object', additionalProperties: true },
+    notifications: {
+      type: 'object',
+      properties: {
+        count: { type: 'integer' },
+        unread: { type: 'integer' },
+      },
+      required: ['count', 'unread'],
+    },
+  },
+  required: [
+    'exportedAt',
+    'profile',
+    'orders',
+    'wallet',
+    'transactions',
+    'reviews',
+    'notifications',
+  ],
+};
+
+const closureResponse = {
+  type: 'object',
+  properties: {
+    data: {
+      ...closureSchema,
+      properties: {
+        ...closureSchema.properties,
+        retained: {
+          ...closureSchema.properties.retained,
+          properties: {
+            policy: { type: 'string' },
+            closedBy: { type: 'string' },
+            pseudonymised: { type: 'array', items: { type: 'string' } },
+            revoked: {
+              type: 'object',
+              properties: {
+                sessions: { type: 'integer' },
+                devices: { type: 'integer' },
+              },
+              required: ['sessions', 'devices'],
+            },
+            retained: { type: 'array', items: retentionEntrySchema },
+          },
+        },
+      },
+    },
+  },
+  required: ['data'],
+};
+
+const exportResponse = {
+  type: 'object',
+  properties: { data: exportSchema },
+  required: ['data'],
 };
 
 const meResponse = {
@@ -288,6 +418,46 @@ export class UsersController {
     @Body() body: RegisterDeviceDto,
   ) {
     const data = await this.users.registerDevice(principal.userId, body);
+    return { data };
+  }
+
+  @Post('me/deletion')
+  @HttpCode(200)
+  @ApiOperation({
+    summary:
+      'Close the authenticated account; identity is pseudonymised, financial history is kept',
+  })
+  @ApiOkResponse({
+    description:
+      'Closure record with the retained summary; replaying it returns the same record',
+    schema: closureResponse,
+  })
+  @ApiBadRequestResponse({
+    description: 'reason is empty or longer than 500 characters',
+  })
+  @ApiUnauthorizedResponse({ description: 'Bearer authentication is required' })
+  async closeAccount(
+    @CurrentUser() principal: AuthenticatedPrincipal,
+    @Body() body: CloseAccountDto,
+  ) {
+    const data = await this.users.closeAccount(principal.userId, {
+      reason: body?.reason,
+    });
+    return { data };
+  }
+
+  @Get('me/export')
+  @ApiOperation({
+    summary: 'Export the caller own data as JSON (no secrets)',
+  })
+  @ApiOkResponse({
+    description:
+      'Profile, order summary, wallet balance, ledger transactions, reviews and notification counts',
+    schema: exportResponse,
+  })
+  @ApiUnauthorizedResponse({ description: 'Bearer authentication is required' })
+  async exportAccount(@CurrentUser() principal: AuthenticatedPrincipal) {
+    const data = await this.users.exportAccount(principal.userId);
     return { data };
   }
 

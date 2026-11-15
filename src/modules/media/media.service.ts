@@ -1,6 +1,7 @@
 import {
   BadRequestException,
   Injectable,
+  InternalServerErrorException,
   NotFoundException,
   OnModuleInit,
   PayloadTooLargeException,
@@ -16,9 +17,11 @@ import {
   MEDIA_EXTENSIONS,
   MEDIA_PURPOSES,
   type MediaContentType,
+  type MediaModerationStatus,
   type MediaPurpose,
 } from './media.constants';
 import { isSupportedContentType, probeImage } from './image-probe';
+import { stripImageMetadata } from './metadata-strip';
 
 /** Microsecond ISO string, produced by PostgreSQL (convention D7). */
 const ISO = `to_char(%s AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')`;
@@ -33,6 +36,14 @@ export interface StoredMediaAsset {
   originalFilename: string;
   width: number | null;
   height: number | null;
+  /** True when embedded metadata was removed before the bytes were stored. */
+  metadataStripped: boolean;
+  /**
+   * Review state. Read-only: the API never writes anything but the column
+   * default, because no scanner is integrated and no permission exists to make
+   * a moderation decision. Exposed so a client does not have to guess.
+   */
+  moderationStatus: MediaModerationStatus;
   createdAt: string;
   updatedAt: string;
 }
@@ -53,13 +64,15 @@ interface MediaRow {
   original_filename: string;
   width: number | null;
   height: number | null;
+  metadata_stripped: boolean;
+  moderation_status: MediaModerationStatus;
   created_at_iso: string;
   updated_at_iso: string;
 }
 
 const COLUMNS = `
   id, purpose, storage_key, content_type, byte_size, checksum_sha256,
-  original_filename, width, height,
+  original_filename, width, height, metadata_stripped, moderation_status,
   ${ISO.replace('%s', 'created_at')} AS created_at_iso,
   ${ISO.replace('%s', 'updated_at')} AS updated_at_iso`;
 
@@ -71,6 +84,12 @@ const COLUMNS = `
  * soft-deleted file is invisible even though it is still on disk. Uploads are
  * validated by sniffing the file header - the client's declared content type is
  * cross-checked, never trusted alone.
+ *
+ * Embedded metadata is removed before the bytes are written (see
+ * metadata-strip.ts): a stored photo carries no GPS position, device model or
+ * capture time, and `metadata_stripped` records that the bytes were rewritten.
+ * Moderation is a read-only state - nothing here decides that an image is
+ * acceptable, because no scanner is integrated.
  *
  * This is the pilot storage option: it is single-host and does not survive a
  * container rebuild. docs/modules/media.md records what has to change before
@@ -145,16 +164,35 @@ export class MediaService implements OnModuleInit {
       });
     }
 
+    // Strip before anything touches the disk. GET serves these bytes, so the
+    // EXIF block (GPS, device, capture time) must never reach storage at all -
+    // rewriting the file later would leave a window where the location is
+    // already published.
+    const strip = stripImageMetadata(input.buffer);
+    const stored = strip.buffer;
+    const storedProbe = probeImage(stored);
+    if (!storedProbe || storedProbe.contentType !== probe.contentType) {
+      // The stripper only drops ancillary segments, so this can only mean the
+      // container was not understood. Refusing is better than storing bytes
+      // that are either corrupt or still carry the metadata.
+      throw new InternalServerErrorException({
+        code: 'MEDIA_METADATA_STRIP_FAILED',
+        message: 'The image could not be stored without its embedded metadata',
+      });
+    }
+
     const storageKey = this.newStorageKey(probe.contentType);
     const absolutePath = this.resolvePath(storageKey);
-    const checksum = createHash('sha256').update(input.buffer).digest('hex');
+    // Size and checksum describe the stored bytes, not the upload: GET streams
+    // the former, and the ETag is derived from the latter.
+    const checksum = createHash('sha256').update(stored).digest('hex');
     const filename = input.filename.slice(0, 255);
 
     await mkdir(dirname(absolutePath), { recursive: true });
     // Write then rename: a partially written file never appears under the key
     // the database will point at.
     const temporary = `${absolutePath}.${randomUUID()}.part`;
-    await writeFile(temporary, input.buffer, { mode: 0o640 });
+    await writeFile(temporary, stored, { mode: 0o640 });
     try {
       await rename(temporary, absolutePath);
     } catch (error) {
@@ -167,19 +205,23 @@ export class MediaService implements OnModuleInit {
       const result = await client.query<MediaRow>(
         `INSERT INTO media_assets
            (owner_user_id, purpose, storage_key, content_type, byte_size,
-            checksum_sha256, original_filename, width, height)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+            checksum_sha256, original_filename, width, height, metadata_stripped)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
          RETURNING ${COLUMNS}`,
         [
           userId,
           purpose,
           storageKey,
           probe.contentType,
-          input.buffer.length,
+          stored.length,
           checksum,
           filename,
-          probe.width,
-          probe.height,
+          // Dimensions come from the stored bytes when the header survived the
+          // rewrite; the original probe is the fallback for a valid file whose
+          // frame header this reader cannot reach.
+          storedProbe.width ?? probe.width,
+          storedProbe.height ?? probe.height,
+          strip.stripped,
         ],
       );
       const row = result.rows[0];
@@ -283,6 +325,8 @@ export class MediaService implements OnModuleInit {
       originalFilename: row.original_filename,
       width: row.width,
       height: row.height,
+      metadataStripped: row.metadata_stripped,
+      moderationStatus: row.moderation_status,
       createdAt: row.created_at_iso,
       updatedAt: row.updated_at_iso,
     };

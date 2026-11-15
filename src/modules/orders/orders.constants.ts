@@ -81,6 +81,32 @@ export const ORDER_NUMBER_SUFFIX_LENGTH = 6;
 /** Collision-safe insert retries on unique violation (23505). */
 export const ORDER_NUMBER_ATTEMPTS = 5;
 
+/**
+ * Buyer-initiated cancellation (B2). A buyer may withdraw an order only while
+ * the tenant has not acted on it yet and the pickup window has not opened:
+ *
+ * - the tenant accepted nothing, committed no kitchen time and produced no
+ *   food, so there is no operational cost to compensate;
+ * - the slot reservation can be returned to the pool before anyone else is
+ *   turned away.
+ *
+ * This is a NARROWER authority than the campus decision in
+ * `cancelForRefundDecision` (docs/PILOT-POLICY.md: "pembatalan operasional
+ * sebelum handover diputuskan pengelola kampus"). Both paths end in the same
+ * money rule — one full refund pending provider success, never an immediate
+ * wallet credit — so the buyer path adds an earlier, self-service exit for a
+ * state in which nothing has happened yet; it does not let a buyer cancel an
+ * order a tenant is already preparing or has produced, which stays a
+ * manager-reviewed operational decision.
+ */
+export const BUYER_CANCELLABLE_STATUSES: readonly OrderStatus[] = [
+  'paid_awaiting_tenant',
+];
+
+/** Audit action recorded for a buyer cancellation (same 500 char reason cap). */
+export const BUYER_CANCELLATION_AUDIT_ACTION = 'order.cancelled_by_buyer';
+export const MAX_CANCELLATION_REASON_LENGTH = 500;
+
 /** Permission required for each tenant transition (D10 inventory). */
 export const TENANT_ORDER_PERMISSIONS = {
   confirm: ['tenant.orders.accept'],

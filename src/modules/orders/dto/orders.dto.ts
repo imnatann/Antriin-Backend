@@ -17,6 +17,7 @@ import {
   ValidateNested,
 } from 'class-validator';
 import {
+  MAX_CANCELLATION_REASON_LENGTH,
   MAX_CHECKOUT_LINES,
   MAX_ITEM_NOTES_LENGTH,
   MAX_LINE_OPTIONS,
@@ -225,6 +226,24 @@ export class CreateScheduleProposalDto {
   @IsString()
   @MinLength(1)
   @MaxLength(500)
+  reason!: string;
+}
+
+/**
+ * Buyer-initiated cancellation input. The buyer supplies a reason only: status,
+ * tenant, buyer, amount and refund kind are all derived server-side from the
+ * locked order row, never from the client.
+ */
+export class CancelOrderDto {
+  @ApiProperty({
+    minLength: 1,
+    maxLength: MAX_CANCELLATION_REASON_LENGTH,
+    description:
+      'Why the buyer withdraws the order (recorded in the order event and the immutable audit row).',
+  })
+  @IsString()
+  @MinLength(1)
+  @MaxLength(MAX_CANCELLATION_REASON_LENGTH)
   reason!: string;
 }
 

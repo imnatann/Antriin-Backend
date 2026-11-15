@@ -124,4 +124,14 @@ export const environmentSchema = Joi.object({
     .min(1024)
     .max(20971520)
     .default(5242880),
+  // When set, GET /metrics requires "Authorization: Bearer <token>". Unset
+  // leaves the endpoint open, which is only appropriate for a private host.
+  METRICS_TOKEN: Joi.string().min(16).max(200).allow('').optional(),
+  // Optional allowlist for the SSE stream; the cap is enforced per connection
+  // so a long-lived stream cannot pin a worker forever.
+  EVENTS_STREAM_MAX_SECONDS: Joi.number()
+    .integer()
+    .min(30)
+    .max(3600)
+    .default(900),
 });

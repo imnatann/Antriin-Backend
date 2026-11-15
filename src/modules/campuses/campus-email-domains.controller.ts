@@ -40,11 +40,40 @@ const domainSchema = {
     id: { type: 'string', format: 'uuid' },
     domain: { type: 'string' },
     active: { type: 'boolean' },
-    verifiedAt: { type: 'string', format: 'date-time', nullable: true },
+    dnsToken: {
+      type: 'string',
+      description:
+        'Publish this value as a TXT record to prove domain ownership',
+    },
+    verifiedAt: {
+      type: 'string',
+      format: 'date-time',
+      nullable: true,
+      description: 'Manager attestation; the switch auth reads',
+    },
+    dnsVerifiedAt: {
+      type: 'string',
+      format: 'date-time',
+      nullable: true,
+      description: 'Proof of ownership from DNS; does not enable the domain',
+    },
+    dnsCheckedAt: { type: 'string', format: 'date-time', nullable: true },
+    dnsLastError: { type: 'string', nullable: true },
     createdAt: { type: 'string', format: 'date-time' },
     updatedAt: { type: 'string', format: 'date-time' },
   },
-  required: ['id', 'domain', 'active', 'verifiedAt', 'createdAt', 'updatedAt'],
+  required: [
+    'id',
+    'domain',
+    'active',
+    'dnsToken',
+    'verifiedAt',
+    'dnsVerifiedAt',
+    'dnsCheckedAt',
+    'dnsLastError',
+    'createdAt',
+    'updatedAt',
+  ],
 };
 
 const single = {
@@ -58,7 +87,10 @@ const single = {
  * an address only when its domain row is active AND verified, so creation
  * never pre-verifies and every mutation is audited with a reason.
  *
- * Verification is a manual attestation: no DNS ownership check exists yet.
+ * Two separate checks exist and are never conflated:
+ *  - POST .../verify is the manager's attestation. It sets the flag auth reads.
+ *  - POST .../dns-verify reads a TXT record the campus published and records
+ *    proof of ownership. It does not by itself enable the domain.
  */
 @ApiTags('Campus access')
 @ApiBearerAuth()
@@ -147,6 +179,44 @@ export class CampusEmailDomainsController {
     @Body() body: VerifyCampusEmailDomainDto,
   ) {
     const data = await this.emailDomains.verify(
+      principal.userId,
+      campusId,
+      domainId,
+      body,
+    );
+    return { data };
+  }
+
+  @Post(':domainId/dns-verify')
+  @HttpCode(200)
+  @ApiOperation({
+    summary: 'Prove domain ownership by reading a DNS TXT record',
+    description:
+      'Looks up TXT at _antriin-challenge.<domain> and compares it with antriin-verify=<dnsToken>. A match stamps dnsVerifiedAt; a mismatch answers 409 EMAIL_DOMAIN_DNS_MISMATCH with the record name and expected value. A successful check does NOT set verifiedAt: a manager still activates the domain through POST .../verify. Always audited.',
+  })
+  @ApiParam({ name: 'campusId', format: 'uuid' })
+  @ApiParam({ name: 'domainId', format: 'uuid' })
+  @ApiOkResponse({
+    description: 'Domain with dnsVerifiedAt set',
+    schema: single,
+  })
+  @ApiBadRequestResponse({ description: 'Invalid reason' })
+  @ApiConflictResponse({
+    description:
+      'EMAIL_DOMAIN_DNS_MISMATCH: the TXT record is missing or does not match',
+  })
+  @ApiNotFoundResponse({ description: 'Domain not found in this campus' })
+  @ApiForbiddenResponse({
+    description: 'campus.access.manage is required for this campus',
+  })
+  @ApiUnauthorizedResponse({ description: 'Bearer authentication is required' })
+  async dnsVerify(
+    @CurrentUser() principal: AuthenticatedPrincipal,
+    @Param('campusId', ParseUUIDPipe) campusId: string,
+    @Param('domainId', ParseUUIDPipe) domainId: string,
+    @Body() body: VerifyCampusEmailDomainDto,
+  ) {
+    const data = await this.emailDomains.dnsVerify(
       principal.userId,
       campusId,
       domainId,

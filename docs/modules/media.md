@@ -61,6 +61,8 @@ curl -X POST "$API/api/v1/media?purpose=menu_item" \
     "height": 768,
     "checksumSha256": "9f2c…",
     "originalFilename": "nasi-goreng.jpg",
+    "metadataStripped": true,
+    "moderationStatus": "unreviewed",
     "createdAt": "2026-01-01T00:00:00.000000Z"
   }
 }
@@ -82,6 +84,28 @@ curl -X POST "$API/api/v1/media?purpose=menu_item" \
 Tipe tidak dipercaya dari klien. `src/modules/media/image-probe.ts` membaca **magic bytes** dan ukuran dari header (PNG IHDR, rantai marker JPEG sampai SOF, chunk WebP VP8/VP8L/VP8X) tanpa decode piksel dan tanpa library gambar. SVG sengaja ditolak: SVG adalah markup yang bisa dieksekusi, bukan sekadar gambar.
 
 Batas ukuran ditegakkan dua kali — oleh parser multipart saat streaming (agar badan kebesaran tidak pernah dibuffer penuh) dan oleh `MediaService` sebelum menulis.
+
+### Metadata kamera dibuang
+
+Sebelum byte ditulis ke disk, `metadata-strip.ts` menghapus metadata yang menempel di berkas:
+
+| Format | Dibuang                                                  | Dipertahankan (sengaja)                 |
+| ------ | -------------------------------------------------------- | --------------------------------------- |
+| JPEG   | APP1 (EXIF/XMP), APP13, COM                              | APP0 (densitas JFIF), APP2 (profil ICC) |
+| PNG    | `tEXt`, `zTXt`, `iTXt`, `eXIf`                           | IHDR/PLTE/IDAT/IEND, `iCCP`             |
+| WebP   | chunk `EXIF` dan `XMP` (+ bit flag VP8X-nya dibersihkan) | chunk gambar, bit ICC/alpha pada VP8X   |
+
+Alasannya: foto menu yang diunggah dari ponsel membawa **koordinat GPS, model perangkat dan waktu pengambilan**. Tanpa penghapusan, setiap pembeli yang memuat gambar ikut menerima lokasi pemiliknya. Profil ICC dipertahankan karena itu manajemen warna, bukan identitas — membuangnya mengubah warna yang dirender.
+
+Konsekuensi yang perlu diketahui klien:
+
+- `byteSize`, `checksumSha256` dan `ETag` menggambarkan **byte yang tersimpan**, bukan byte yang diunggah. Ukurannya bisa lebih kecil.
+- `metadataStripped` bernilai `true` hanya bila ada yang benar-benar dihapus. Berkas tanpa metadata disimpan apa adanya (checksum sama dengan unggahan).
+- Penghapusan hanya menyentuh metadata, **bukan piksel**: chunk data gambar disalin utuh. Berkas hasilnya tetap bisa dibaca `probeImage`.
+- Container yang tidak dikenali atau rusak dikembalikan apa adanya, bukan ditebak — kehilangan data lebih buruk daripada metadata tersisa.
+- Bila hasil penghapusan tidak lagi terbaca sebagai format yang sama, unggahan **gagal** (500 `MEDIA_METADATA_STRIP_FAILED`) daripada menyimpan berkas yang tidak bisa ditampilkan.
+
+**Belum ada backfill**: berkas yang diunggah sebelum perubahan ini masih menyimpan metadatanya.
 
 ### Penyimpanan
 
@@ -113,9 +137,9 @@ Aset milik orang lain menjawab `404`, bukan `403`, supaya endpoint tidak bisa di
 ## Batasan yang perlu diketahui
 
 - **Disk lokal, bukan object storage.** Berkas tidak ikut berpindah saat container dibangun ulang dan tidak dibagi antar-instance. Deployment multi-host memerlukan S3/R2 (atau volume bersama) sebelum modul ini bisa diandalkan.
-- **Tanpa moderasi gambar.** Tidak ada pemindaian isi, tidak ada penandaan otomatis.
+- **Moderasi gambar belum ada.** `moderationStatus` hanya status baca (`unreviewed`/`clear`/`flagged`) dengan default `unreviewed`; tidak ada endpoint, scanner, maupun permission untuk mengubahnya karena belum ada provider. Nilai `clear` tidak pernah diproduksi sistem ini.
 - **Tanpa thumbnail dan tanpa resize.** Klien mengunduh ukuran asli.
-- **EXIF tidak dibuang.** Metadata lokasi pada foto tetap ada di berkas yang disajikan.
+- **Metadata dihapus hanya pada unggahan baru.** Aset lama tidak di-backfill.
 - **Tidak ada pembersihan otomatis.** Tombstone dan berkasnya bertahan sampai operator membersihkannya.
 
 ## Pengujian

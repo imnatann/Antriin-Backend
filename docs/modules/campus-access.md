@@ -13,14 +13,15 @@ Dua hal berbeda ditangani di modul `campuses`: **membaca** siapa saja pengelola 
 
 ## Endpoint
 
-| Method | Path                                                        | Permission             |
-| ------ | ----------------------------------------------------------- | ---------------------- |
-| GET    | `/api/v1/campuses/:campusId/access`                         | `campus.access.manage` |
-| GET    | `/api/v1/campuses/:campusId/email-domains`                  | `campus.access.manage` |
-| POST   | `/api/v1/campuses/:campusId/email-domains`                  | `campus.access.manage` |
-| POST   | `/api/v1/campuses/:campusId/email-domains/:domainId/verify` | `campus.access.manage` |
-| PATCH  | `/api/v1/campuses/:campusId/email-domains/:domainId`        | `campus.access.manage` |
-| DELETE | `/api/v1/campuses/:campusId/email-domains/:domainId`        | `campus.access.manage` |
+| Method | Path                                                            | Permission             |
+| ------ | --------------------------------------------------------------- | ---------------------- |
+| GET    | `/api/v1/campuses/:campusId/access`                             | `campus.access.manage` |
+| GET    | `/api/v1/campuses/:campusId/email-domains`                      | `campus.access.manage` |
+| POST   | `/api/v1/campuses/:campusId/email-domains`                      | `campus.access.manage` |
+| POST   | `/api/v1/campuses/:campusId/email-domains/:domainId/verify`     | `campus.access.manage` |
+| POST   | `/api/v1/campuses/:campusId/email-domains/:domainId/dns-verify` | `campus.access.manage` |
+| PATCH  | `/api/v1/campuses/:campusId/email-domains/:domainId`            | `campus.access.manage` |
+| DELETE | `/api/v1/campuses/:campusId/email-domains/:domainId`            | `campus.access.manage` |
 
 ## Daftar pengelola kampus
 
@@ -49,14 +50,40 @@ Domain adalah gerbang verifikasi email kampus: `AuthService` hanya menerima doma
 - Duplikat global (unique index pada `domain`) dijawab **409** `EMAIL_DOMAIN_TAKEN` — domain hanya boleh dimiliki satu kampus.
 - Baris baru dibuat `active = true`, `verified_at = NULL`, sehingga **belum** membuka verifikasi email sampai diverifikasi.
 
-### Verifikasi
+### Dua verifikasi yang berbeda
+
+| Kolom           | Artinya                                            | Mengaktifkan domain untuk auth?                        |
+| --------------- | -------------------------------------------------- | ------------------------------------------------------ |
+| `verifiedAt`    | Pengelola menyatakan domain milik kampus           | **Ya** — satu-satunya saklar yang dibaca `AuthService` |
+| `dnsVerifiedAt` | TXT record membuktikan kampus mengendalikan domain | **Tidak**                                              |
+
+Pemisahan ini disengaja. `verifiedAt` adalah attestation: ia tidak membuktikan kepemilikan, hanya bahwa pengelola menyetujuinya. `dnsVerifiedAt` adalah bukti nyata, tetapi membiarkannya langsung menyalakan domain berarti gangguan DNS sesaat bisa mengubah siapa yang boleh menulis ulasan. Domain yang sudah terbukti lewat DNS tetap diaktifkan pengelola lewat `POST .../verify`.
+
+### Verifikasi (attestasi pengelola)
 
 ```json
 { "reason": "Kepemilikan domain dikonfirmasi lewat surat resmi kampus" }
-}
 ```
 
-**Verifikasi DNS otomatis belum diimplementasikan.** Endpoint ini mencatat bahwa pengelola berizin sudah memverifikasi kepemilikan domain di luar sistem; itulah sebabnya `reason` wajib dan setiap verifikasi menulis `audit_events`. Memanggil ulang pada domain yang sudah terverifikasi bersifat idempoten: `verified_at` tidak berubah.
+Endpoint ini mencatat bahwa pengelola berizin sudah memverifikasi kepemilikan domain di luar sistem; itulah sebabnya `reason` wajib dan setiap verifikasi menulis `audit_events`. Memanggil ulang pada domain yang sudah terverifikasi bersifat idempoten: `verified_at` tidak berubah.
+
+### Verifikasi DNS (`POST .../dns-verify`)
+
+Domain pendaftaran menyertakan `dnsToken` (32 karakter hex acak, dibuat server — klien tidak pernah memilihnya) pada respons `GET`/`POST`. Kampus menerbitkan:
+
+```
+_antriin-challenge.<domain>   TXT   "antriin-verify=<dnsToken>"
+```
+
+Lalu memanggil `POST .../dns-verify` dengan `{ reason }`.
+
+| Hasil                                | Respons                                                                                |
+| ------------------------------------ | -------------------------------------------------------------------------------------- |
+| TXT cocok                            | 200, `dnsVerifiedAt` terisi, audit `campus.email_domain_dns_verified`                  |
+| Record tidak ada / tidak cocok       | 409 `EMAIL_DOMAIN_DNS_MISMATCH` + `recordName` + `expectedValue`, `dnsLastError` diisi |
+| Lookup gagal (timeout/resolver mati) | 503 `EMAIL_DOMAIN_DNS_UNAVAILABLE`; server tidak berpura-pura "tidak cocok"            |
+
+Lookup memakai TXT sungguhan (`node:dns/promises`) dengan batas waktu 5 detik, dan berada di balik port `DnsResolver` supaya bisa diuji tanpa bergantung pada isi zona sungguhan. Nilai dianggap cocok hanya bila **sama persis** setelah chunk TXT digabung — pencocokan substring tidak dipakai, agar record lain tidak bisa dipakai menebak.
 
 ### Menonaktifkan dan menghapus
 
@@ -68,5 +95,6 @@ Semua mutasi menulis `audit_events` dengan aksi `campus.email_domain_created`, `
 ## Yang sengaja belum ada
 
 - Memberi/mencabut akses pengelola kampus lewat HTTP (dilarang `docs/ACCESS.md`).
-- Verifikasi kepemilikan domain otomatis (DNS TXT / email ke `admin@`).
+- Verifikasi ulang DNS berkala: `dnsVerifiedAt` tidak pernah dicabut otomatis bila TXT record kemudian dihapus.
+- Pengecekan MX/SPF/DKIM, atau verifikasi lewat email ke `admin@`.
 - Daftar domain yang pernah terdaftar untuk kampus lain: duplikat dijawab 409 tanpa menyebutkan pemiliknya, supaya tidak membocorkan kampus lain.

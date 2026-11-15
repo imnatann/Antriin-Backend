@@ -70,7 +70,9 @@ API di-bind ke `0.0.0.0:3000` lewat `API_BIND_ADDRESS`.
 
 Deploy berjalan end-to-end dan diverifikasi dari internet publik.
 
-### Deploy terakhir — commit `9eb17c2`
+> **Catatan (15 Nov 2026):** bagian ini merekam deploy tanggal 13 November. Sejak itu `main` sudah bergerak sejauh dua commit (`95900ba`, `fc56f4b`) dan migrasi bertambah menjadi `0000..0012`, sehingga image di host **belum** memuat endpoint profil `/me`, quote, timeline, laporan, risiko, penemuan publik, maupun unggah media. Deploy ulang diperlukan sebelum host mencerminkan `main`; angka operasi/path di tabel di bawah juga sudah usang (dokumen OpenAPI saat ini jauh lebih besar).
+
+### Deploy terakhir yang tercatat — commit `9eb17c2`
 
 | Pemeriksaan                                   | Hasil                                                                                          |
 | --------------------------------------------- | ---------------------------------------------------------------------------------------------- |

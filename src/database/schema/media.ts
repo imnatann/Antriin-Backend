@@ -1,5 +1,6 @@
 import { sql } from 'drizzle-orm';
 import {
+  boolean,
   check,
   index,
   integer,
@@ -54,6 +55,18 @@ export const mediaAssets = pgTable(
       .notNull(),
     width: integer('width'),
     height: integer('height'),
+    // Migration 0013: camera metadata (GPS, device, timestamps) is stripped on
+    // upload, so a photo of a stall does not publish the photographer's
+    // location. Recorded because it changes the stored bytes.
+    metadataStripped: boolean('metadata_stripped').default(false).notNull(),
+    // Served from GET /media/{id}/thumbnail when a thumbnail was produced.
+    thumbnailKey: varchar('thumbnail_key', { length: 200 }),
+    // Moderation is a review state, never an automatic judgement. No provider
+    // is integrated, so everything starts unreviewed until a human (or a future
+    // provider) moves it.
+    moderationStatus: varchar('moderation_status', { length: 16 })
+      .default('unreviewed')
+      .notNull(),
     // Soft delete: a row with deleted_at set is a tombstone that GET /media
     // refuses. The file on disk is left for an operator-driven cleanup pass.
     deletedAt: timestamp('deleted_at', { withTimezone: true }),
@@ -84,6 +97,10 @@ export const mediaAssets = pgTable(
     check(
       'media_assets_checksum_check',
       sql`${table.checksumSha256} ~ '^[0-9a-f]{64}$'`,
+    ),
+    check(
+      'media_assets_moderation_check',
+      sql`${table.moderationStatus} in ('unreviewed', 'clear', 'flagged')`,
     ),
     check(
       'media_assets_dimensions_check',

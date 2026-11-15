@@ -65,6 +65,8 @@ const storedAsset: StoredMediaAsset = {
   originalFilename: 'photo.png',
   width: 10,
   height: 10,
+  metadataStripped: true,
+  moderationStatus: 'unreviewed',
   createdAt: '2026-01-01T00:00:00.000000Z',
   updatedAt: '2026-01-01T00:00:00.000000Z',
 };
@@ -273,9 +275,20 @@ describe('Media HTTP contract', () => {
     const bytes = pngBytes(320, 240);
     const response = await upload(base + '?purpose=menu_item', bytes, auth);
     assert.equal(response.statusCode, 201);
-    const body = response.json() as { data: { id: string; url: string } };
+    const body = response.json() as {
+      data: {
+        id: string;
+        url: string;
+        metadataStripped: boolean;
+        moderationStatus: string;
+      };
+    };
     assert.equal(body.data.id, ASSET_ID);
     assert.equal(body.data.url, '/api/v1/media/' + ASSET_ID);
+    // The response says whether the stored bytes were rewritten, and what the
+    // (read-only) review state is - it never claims the image was reviewed.
+    assert.equal(body.data.metadataStripped, true);
+    assert.equal(body.data.moderationStatus, 'unreviewed');
     assert.equal(stub.lastUpload?.userId, ACTOR_ID);
     assert.equal(stub.lastUpload?.purpose, 'menu_item');
     assert.equal(stub.lastUpload?.declaredContentType, 'image/png');

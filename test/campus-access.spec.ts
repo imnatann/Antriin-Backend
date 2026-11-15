@@ -1,5 +1,5 @@
 import 'reflect-metadata';
-import { after, before, describe, it } from 'node:test';
+import { after, before, beforeEach, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { Pool } from 'pg';
@@ -9,10 +9,37 @@ import { AccessService } from '../src/modules/access/access.service';
 import { AuditService } from '../src/modules/audit/audit.service';
 import { CampusAccessService } from '../src/modules/campuses/campus-access.service';
 import { CampusEmailDomainsService } from '../src/modules/campuses/campus-email-domains.service';
+import type { DnsResolver } from '../src/modules/campuses/dns-resolver';
 import { AuthService } from '../src/modules/auth/auth.service';
 import type { OtpDeliveryMessage } from '../src/modules/auth/auth.constants';
 
 const testDatabaseUrl = process.env.TEST_DATABASE_URL;
+
+/**
+ * Controllable DNS resolver: the domain-ownership check must be exercised
+ * without depending on what a real zone happens to publish today.
+ */
+class StubDnsResolver implements DnsResolver {
+  records = new Map<string, string[][]>();
+  failure: Error | null = null;
+  calls: string[] = [];
+
+  async resolveTxt(name: string): Promise<string[][]> {
+    this.calls.push(name);
+    if (this.failure) throw this.failure;
+    const value = this.records.get(name);
+    if (!value) {
+      const error = new Error('queryTxt ENOTFOUND') as Error & {
+        code: string;
+      };
+      error.code = 'ENOTFOUND';
+      throw error;
+    }
+    return value;
+  }
+}
+
+const dns = new StubDnsResolver();
 
 /**
  * Minimal OTP delivery port: the campus email challenge must be created, but
@@ -128,11 +155,18 @@ describe(
       access = new AccessService(db);
       const audit = new AuditService(db, access);
       campusAccess = new CampusAccessService(db, access);
-      domains = new CampusEmailDomainsService(db, access, audit);
+      domains = new CampusEmailDomainsService(db, dns, access, audit);
       auth = new AuthService(db, authConfig(), new CapturingOtpDelivery());
     });
     after(async () => {
       await pool?.end();
+    });
+    beforeEach(() => {
+      // A record leaked from one test would make a later lookup pass for the
+      // wrong reason, so the stub starts empty every time.
+      dns.records.clear();
+      dns.calls.length = 0;
+      dns.failure = null;
     });
 
     it('lists only the active members of one campus, ordered by display name', async () => {
@@ -170,6 +204,159 @@ describe(
           (error) => statusOf(error) === 403,
         );
       }
+    });
+
+    it('proves domain ownership from a DNS TXT record without enabling the domain', async () => {
+      const env = await createEnv(pool);
+      const domainName = 'dns-' + env.tag + '.ac.id';
+      const created = await domains.create(env.adminA, env.campusA, {
+        domain: domainName,
+        reason: 'Uji verifikasi DNS',
+      });
+      // The token is minted server-side: the client never chooses it.
+      assert.match(created.dnsToken, /^[0-9a-f]{32}$/);
+      assert.equal(created.dnsVerifiedAt, null);
+      assert.equal(created.dnsCheckedAt, null);
+
+      const recordName = '_antriin-challenge.' + domainName;
+      const expected = 'antriin-verify=' + created.dnsToken;
+
+      // Nothing published yet -> 409 with exactly what to publish.
+      await assert.rejects(
+        domains.dnsVerify(env.adminA, env.campusA, created.id, {
+          reason: 'Cek pertama',
+        }),
+        (error: unknown) => {
+          assert.equal(statusOf(error), 409);
+          assert.equal(codeOf(error), 'EMAIL_DOMAIN_DNS_MISMATCH');
+          const body = (
+            error as { getResponse: () => unknown }
+          ).getResponse() as {
+            recordName?: string;
+            expectedValue?: string;
+          };
+          assert.equal(body.recordName, recordName);
+          assert.equal(body.expectedValue, expected);
+          return true;
+        },
+      );
+      const failed = (await domains.list(env.adminA, env.campusA)).find(
+        (row) => row.id === created.id,
+      )!;
+      assert.notEqual(failed.dnsCheckedAt, null);
+      assert.match(failed.dnsLastError ?? '', /No TXT record found/);
+      assert.equal(failed.dnsVerifiedAt, null);
+
+      // TXT records arrive split into chunks; only the joined value counts.
+      dns.records.set(recordName, [['antriin-ver', 'ify=' + created.dnsToken]]);
+      dns.records.set('_antriin-challenge.other.test', [
+        ['antriin-verify=deadbeef'],
+      ]);
+
+      const verified = await domains.dnsVerify(
+        env.adminA,
+        env.campusA,
+        created.id,
+        {
+          reason: 'TXT record sudah dipasang',
+        },
+      );
+      assert.notEqual(verified.dnsVerifiedAt, null);
+      assert.equal(verified.dnsLastError, null);
+      assert.equal(dns.calls.includes(recordName), true);
+
+      // Proof of ownership does NOT flip the flag auth reads: a manager still
+      // has to activate the domain explicitly.
+      assert.equal(verified.verifiedAt, null);
+
+      // The mutation is audited with the actor and the reason.
+      const audits = await pool.query<{ action: string; reason: string }>(
+        `select action, reason from audit_events
+          where scope_id = $1 and target_id = $2 order by occurred_at`,
+        [env.campusA, created.id],
+      );
+      assert.deepEqual(
+        audits.rows.map((row) => row.action),
+        [
+          'campus.email_domain_created',
+          'campus.email_domain_dns_failed',
+          'campus.email_domain_dns_verified',
+        ],
+      );
+      assert.equal(audits.rows[2].reason, 'TXT record sudah dipasang');
+    });
+
+    it('refuses a TXT record that merely contains the expected value', async () => {
+      const env = await createEnv(pool);
+      const domainName = 'sub-' + env.tag + '.ac.id';
+      const created = await domains.create(env.adminA, env.campusA, {
+        domain: domainName,
+        reason: 'Uji pencocokan ketat',
+      });
+      // A substring match would let an unrelated record pass.
+      dns.records.set('_antriin-challenge.' + domainName, [
+        ['prefix-antriin-verify=' + created.dnsToken + '-suffix'],
+      ]);
+      await assert.rejects(
+        domains.dnsVerify(env.adminA, env.campusA, created.id, {
+          reason: 'Cek ketat',
+        }),
+        (error) =>
+          statusOf(error) === 409 &&
+          codeOf(error) === 'EMAIL_DOMAIN_DNS_MISMATCH',
+      );
+    });
+
+    it('reports an unavailable resolver as 503 instead of a mismatch', async () => {
+      const env = await createEnv(pool);
+      const created = await domains.create(env.adminA, env.campusA, {
+        domain: 'resolver-' + env.tag + '.ac.id',
+        reason: 'Uji resolver mati',
+      });
+      const failure = Object.assign(new Error('queryTxt ESERVFAIL'), {
+        code: 'ESERVFAIL',
+      });
+      dns.failure = failure;
+      try {
+        await assert.rejects(
+          domains.dnsVerify(env.adminA, env.campusA, created.id, {
+            reason: 'Resolver bermasalah',
+          }),
+          (error) =>
+            statusOf(error) === 503 &&
+            codeOf(error) === 'EMAIL_DOMAIN_DNS_UNAVAILABLE',
+        );
+      } finally {
+        dns.failure = null;
+      }
+      // The failure is recorded so an operator can see why nothing happened.
+      const rows = await domains.list(env.adminA, env.campusA);
+      const row = rows.find((entry) => entry.id === created.id)!;
+      assert.equal(row.dnsVerifiedAt, null);
+      assert.match(row.dnsLastError ?? '', /ESERVFAIL/);
+    });
+
+    it('requires campus.access.manage to check DNS and scopes to the campus', async () => {
+      const env = await createEnv(pool);
+      const created = await domains.create(env.adminA, env.campusA, {
+        domain: 'perm-' + env.tag + '.ac.id',
+        reason: 'Uji izin DNS',
+      });
+      dns.records.set('_antriin-challenge.' + created.domain, [
+        ['antriin-verify=' + created.dnsToken],
+      ]);
+      await assert.rejects(
+        domains.dnsVerify(env.viewerA, env.campusA, created.id, {
+          reason: 'Tanpa izin',
+        }),
+        (error) => statusOf(error) === 403,
+      );
+      await assert.rejects(
+        domains.dnsVerify(env.adminB, env.campusB, created.id, {
+          reason: 'Kampus lain',
+        }),
+        (error) => statusOf(error) === 404,
+      );
     });
 
     it('normalizes a registered domain and refuses a global duplicate', async () => {

@@ -1,8 +1,16 @@
 # Checkpoint dan lanjutan backend
 
-Checkpoint 12 November 2026 dibuat atas permintaan pengguna sebelum batas penggunaan. Tujuan awal tetap menyelesaikan seluruh backend, dengan root sebagai supervisor dan subagent **hanya GPT-6 Luna**. Semua fitur belum selesai; jangan menandai seluruh proyek selesai.
+> **Dokumen ini sebagian sudah basi.** Bagian "GitHub dan bukti diterima" di bawah menyebut repository dan branch lama (`BagasDwikiPurnomo/Antriin-Backend`, `codex/*`) serta workaround Node24 yang sudah tidak berlaku. Remote yang dipakai sekarang adalah **`imnatann/Antriin-Backend`, branch `main`**, dan Node yang dipakai adalah versi pada `.nvmrc`. Untuk keadaan terkini selalu baca [BACKEND-BACKLOG.md](BACKEND-BACKLOG.md); bagian historis di dokumen ini dipertahankan sebagai catatan bagaimana slice-slice awal dikerjakan.
 
-## GitHub dan bukti diterima
+Checkpoint 12 November 2026 dibuat atas permintaan pengguna sebelum batas penggunaan. Tujuan awal tetap menyelesaikan seluruh backend, dengan root sebagai supervisor dan subagent. Semua fitur belum selesai; jangan menandai seluruh proyek selesai.
+
+## Keadaan sekarang (ringkas)
+
+- 24 modul domain, migrasi `0000..0012` (0013 menyusul), **142 route** di bawah `/api/v1`.
+- Tidak ada modul scaffold. `/me` dan risk sudah selesai dan teruji.
+- Yang belum ada adalah integrasi vendor (OTP/QRIS/refund/payout/push/object storage) dan lapisan operasional (TLS, backup, monitoring, job terjadwal) — lihat daftar A/B pada BACKEND-BACKLOG.
+
+## GitHub dan bukti diterima (historis, 12 November 2026)
 
 - Branch terverifikasi: [codex/backend-implementation](https://github.com/BagasDwikiPurnomo/Antriin-Backend/tree/codex/backend-implementation).
 - Fondasi awal `f8eb57e`, kebijakan/error/config/test runner `44afdfa`, domain foundation `9ab4a50` sudah di-push.

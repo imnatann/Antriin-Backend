@@ -1,14 +1,23 @@
 import {
   BadRequestException,
   ConflictException,
+  Inject,
   Injectable,
   NotFoundException,
+  ServiceUnavailableException,
 } from '@nestjs/common';
+import { randomBytes } from 'node:crypto';
 import type { PoolClient } from 'pg';
 import { DatabaseService } from '../../database/database.service';
 import { AccessService } from '../access/access.service';
 import { AuditService } from '../audit/audit.service';
 import { uuidPattern } from '../notifications/outbox.service';
+import {
+  DNS_LOOKUP_TIMEOUT_MS,
+  DNS_RESOLVER,
+  withTimeout,
+  type DnsResolver,
+} from './dns-resolver';
 
 /** D7: response timestamps are the DB microsecond UTC strings themselves. */
 const SQL_TS = (column: string): string =>
@@ -18,10 +27,25 @@ const DOMAIN_COLUMNS = [
   'd.id::text as id',
   'd.domain',
   'd.active',
+  'd.dns_token',
   `${SQL_TS('d.verified_at')} as verified_at`,
+  `${SQL_TS('d.dns_verified_at')} as dns_verified_at`,
+  `${SQL_TS('d.dns_checked_at')} as dns_checked_at`,
+  'd.dns_last_error',
   `${SQL_TS('d.created_at')} as created_at`,
   `${SQL_TS('d.updated_at')} as updated_at`,
 ].join(', ');
+
+/**
+ * Same columns without the `d.` alias: INSERT ... RETURNING has no table alias,
+ * so reusing the aliased list there fails with 42P01 (undefined table "d").
+ */
+const DOMAIN_COLUMNS_PLAIN = DOMAIN_COLUMNS.replaceAll('d.', '');
+
+/** The record a campus must publish: TXT at `_antriin-challenge.<domain>`. */
+const DNS_RECORD_PREFIX = '_antriin-challenge.';
+const DNS_VALUE_PREFIX = 'antriin-verify=';
+const DNS_ERROR_MAX_LENGTH = 300;
 
 const DOMAIN_MAX_LENGTH = 253;
 const LABEL_MAX_LENGTH = 63;
@@ -31,7 +55,14 @@ export type CampusEmailDomainView = {
   id: string;
   domain: string;
   active: boolean;
+  /** TXT value the campus publishes to prove ownership of the domain. */
+  dnsToken: string;
+  /** Manager attestation: what makes auth accept the domain. */
   verifiedAt: string | null;
+  /** Proof from DNS that the campus controls the domain. */
+  dnsVerifiedAt: string | null;
+  dnsCheckedAt: string | null;
+  dnsLastError: string | null;
   createdAt: string;
   updatedAt: string;
 };
@@ -40,7 +71,11 @@ type DomainRow = {
   id: string;
   domain: string;
   active: boolean;
+  dns_token: string;
   verified_at: string | null;
+  dns_verified_at: string | null;
+  dns_checked_at: string | null;
+  dns_last_error: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -52,15 +87,19 @@ type DomainRow = {
  * verified (src/modules/auth/auth.service.ts), so this slice must never
  * pre-verify anything it creates: a new domain is born active but UNVERIFIED.
  *
- * There is no automated DNS ownership check yet. The verify endpoint records
- * that a campus manager has confirmed ownership of the domain outside this
- * system; that manual attestation is the only thing it stores, and it is
- * always audited with the manager's reason.
+ * Two independent facts are recorded and they are never conflated:
+ *  - `verified_at` is the manager's attestation (POST .../verify). It is the
+ *    single switch auth reads, and it proves nothing about ownership.
+ *  - `dns_verified_at` is proof of ownership from a TXT record the campus
+ *    published (POST .../dns-verify). It does not by itself enable the domain;
+ *    a manager still has to activate it.
+ * Both are always audited with the actor and a reason.
  */
 @Injectable()
 export class CampusEmailDomainsService {
   constructor(
     private readonly database: DatabaseService,
+    @Inject(DNS_RESOLVER) private readonly dns: DnsResolver,
     private readonly access: AccessService,
     private readonly audit: AuditService,
   ) {}
@@ -103,15 +142,16 @@ export class CampusEmailDomainsService {
       await this.requireManage(actorUserId, campusId, tx);
       let row: DomainRow;
       try {
+        // The token is generated here, never supplied by the client: it is the
+        // value the campus must publish in DNS, so the client must not be able
+        // to choose a value it already controls elsewhere.
+        const dnsToken = randomBytes(16).toString('hex');
         const inserted = await tx.query<DomainRow>(
           `insert into campus_email_domains
-             (campus_id, domain, active, verified_at, created_at, updated_at)
-           values ($1, $2, true, null, now(), now())
-           returning id::text as id, domain, active,
-                     ${SQL_TS('verified_at')} as verified_at,
-                     ${SQL_TS('created_at')} as created_at,
-                     ${SQL_TS('updated_at')} as updated_at`,
-          [campusId, domain],
+             (campus_id, domain, active, verified_at, dns_token, created_at, updated_at)
+           values ($1, $2, true, null, $3, now(), now())
+           returning ${DOMAIN_COLUMNS_PLAIN}`,
+          [campusId, domain, dnsToken],
         );
         row = inserted.rows[0];
       } catch (error) {
@@ -164,10 +204,7 @@ export class CampusEmailDomainsService {
           `update campus_email_domains d
               set verified_at = now(), updated_at = now()
             where d.id = $1 and d.campus_id = $2
-          returning id::text as id, domain, active,
-                    ${SQL_TS('verified_at')} as verified_at,
-                    ${SQL_TS('created_at')} as created_at,
-                    ${SQL_TS('updated_at')} as updated_at`,
+          returning ${DOMAIN_COLUMNS}`,
           [domainId, campusId],
         );
         row = updated.rows[0];
@@ -187,6 +224,131 @@ export class CampusEmailDomainsService {
       });
       return toView(row);
     });
+  }
+
+  /**
+   * Proves domain ownership by DNS, the check the attestation endpoint cannot
+   * perform.
+   *
+   * The campus publishes a TXT record at `_antriin-challenge.<domain>` whose
+   * value is `antriin-verify=<dnsToken>`, and this method reads it. A match
+   * stamps `dns_verified_at`; a miss records the reason in `dns_last_error`
+   * and answers 409 so the client can show what was looked for.
+   *
+   * Deliberately does NOT set `verified_at`: that column is the switch auth
+   * reads to accept the domain for reviewer eligibility, and a DNS proof and a
+   * manager's decision to activate are separate facts. A campus that proved
+   * ownership still calls the attestation endpoint to turn the domain on. This
+   * keeps a DNS glitch from silently changing who may post reviews.
+   */
+  async dnsVerify(
+    actorUserId: string,
+    campusId: string,
+    domainId: string,
+    input: { reason: string },
+  ): Promise<CampusEmailDomainView> {
+    assertUuid(actorUserId, 'user');
+    assertUuid(campusId, 'campus');
+    assertUuid(domainId, 'email domain');
+    const reason = normalizeReason(input.reason);
+
+    const current = await this.withTransaction(async (tx) => {
+      await this.requireManage(actorUserId, campusId, tx);
+      return this.lockDomain(tx, campusId, domainId);
+    });
+
+    const recordName = `${DNS_RECORD_PREFIX}${current.domain}`;
+    const expected = `${DNS_VALUE_PREFIX}${current.dns_token}`;
+    let matched = false;
+    let failure: string | null = null;
+    try {
+      const records = await withTimeout(
+        this.dns.resolveTxt(recordName),
+        DNS_LOOKUP_TIMEOUT_MS,
+      );
+      // TXT answers arrive split into chunks; a single value may span several.
+      matched = records.some((chunks) => chunks.join('') === expected);
+      if (!matched) {
+        failure =
+          records.length === 0
+            ? `No TXT record found at ${recordName}`
+            : `TXT record at ${recordName} does not contain the expected value`;
+      }
+    } catch (error) {
+      const code = (error as { code?: string }).code ?? '';
+      // A missing record is a legitimate "not yet published" answer; anything
+      // else means the lookup itself did not happen, and claiming failure
+      // would be a claim we cannot make.
+      if (code === 'ENOTFOUND' || code === 'ENODATA') {
+        failure = `No TXT record found at ${recordName}`;
+      } else {
+        await this.withTransaction(async (tx) => {
+          await this.requireManage(actorUserId, campusId, tx);
+          await tx.query(
+            `update campus_email_domains
+                set dns_checked_at = now(), dns_last_error = $3, updated_at = now()
+              where id = $1 and campus_id = $2`,
+            [domainId, campusId, truncate(errorMessage(error))],
+          );
+        });
+        throw new ServiceUnavailableException({
+          code: 'EMAIL_DOMAIN_DNS_UNAVAILABLE',
+          message: 'The DNS lookup could not be completed; try again later',
+        });
+      }
+    }
+
+    // The result is committed BEFORE any error is raised. Throwing inside this
+    // transaction would roll back the `dns_checked_at`/`dns_last_error` write,
+    // and a failed check that leaves no trace is exactly the situation the
+    // columns exist to prevent: the manager would see "409" with no record of
+    // when the lookup ran or what DNS actually answered.
+    const { view, auditAction } = await this.withTransaction(async (tx) => {
+      await this.requireManage(actorUserId, campusId, tx);
+      const updated = await tx.query<DomainRow>(
+        `update campus_email_domains d
+            set dns_verified_at = case when $3::boolean then now() else dns_verified_at end,
+                dns_checked_at = now(),
+                dns_last_error = $4,
+                updated_at = now()
+          where d.id = $1 and d.campus_id = $2
+        returning ${DOMAIN_COLUMNS}`,
+        [domainId, campusId, matched, matched ? null : truncate(failure)],
+      );
+      const row = updated.rows[0];
+      const action = matched
+        ? 'campus.email_domain_dns_verified'
+        : 'campus.email_domain_dns_failed';
+      await this.audit.append(tx, {
+        actor: { userId: actorUserId },
+        scopeType: 'campus',
+        scopeId: campusId,
+        action,
+        targetType: 'email_domain',
+        targetId: row.id,
+        reason,
+        metadata: {
+          domain: row.domain,
+          recordName,
+          matched,
+          checkedAt: row.dns_checked_at,
+        },
+      });
+      return { view: toView(row), auditAction: action };
+    });
+
+    if (!matched) {
+      throw new ConflictException({
+        code: 'EMAIL_DOMAIN_DNS_MISMATCH',
+        message:
+          failure ??
+          `Publish a TXT record at ${recordName} with value ${expected}`,
+        recordName,
+        expectedValue: expected,
+        auditAction,
+      });
+    }
+    return view;
   }
 
   /**
@@ -216,10 +378,7 @@ export class CampusEmailDomainsService {
         `update campus_email_domains d
             set active = $3, updated_at = now()
           where d.id = $1 and d.campus_id = $2
-        returning id::text as id, domain, active,
-                  ${SQL_TS('verified_at')} as verified_at,
-                  ${SQL_TS('created_at')} as created_at,
-                  ${SQL_TS('updated_at')} as updated_at`,
+        returning ${DOMAIN_COLUMNS}`,
         [domainId, campusId, active],
       );
       const row = updated.rows[0];
@@ -329,12 +488,27 @@ export class CampusEmailDomainsService {
   }
 }
 
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : 'DNS lookup failed';
+}
+
+function truncate(value: string | null): string | null {
+  if (value === null) return null;
+  return value.length <= DNS_ERROR_MAX_LENGTH
+    ? value
+    : value.slice(0, DNS_ERROR_MAX_LENGTH);
+}
+
 function toView(row: DomainRow): CampusEmailDomainView {
   return {
     id: row.id,
     domain: row.domain,
     active: row.active,
+    dnsToken: row.dns_token,
     verifiedAt: row.verified_at,
+    dnsVerifiedAt: row.dns_verified_at,
+    dnsCheckedAt: row.dns_checked_at,
+    dnsLastError: row.dns_last_error,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };

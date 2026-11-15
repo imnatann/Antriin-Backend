@@ -95,6 +95,74 @@ export type DeviceView = {
   updatedAt: string;
 };
 
+/** Body of POST /me/deletion; the reason is optional and only recorded. */
+export type CloseAccountInput = { reason?: string };
+
+export type AccountClosureView = {
+  status: 'closed';
+  /** Pseudonymised display name the account now carries. */
+  displayName: string;
+  closedAt: string;
+  requestId: string;
+  /** Sessions revoked by *this* call; 0 on an idempotent replay. */
+  revokedSessions: number;
+  /** The stored account_deletion_requests.retained_summary. */
+  retained: Record<string, unknown>;
+};
+
+export type AccountExport = {
+  exportedAt: string;
+  profile: {
+    id: string;
+    displayName: string;
+    status: string;
+    createdAt: string;
+    updatedAt: string;
+    phone: MePhone;
+    campusEmail: MeCampusEmail;
+  };
+  orders: {
+    total: number;
+    byStatus: { status: string; count: number }[];
+    totalsByCurrency: { currency: string; totalMinor: string }[];
+  };
+  wallet: { currency: string; availableMinor: string }[];
+  transactions: {
+    count: number;
+    truncated: boolean;
+    items: {
+      id: string;
+      currency: string;
+      direction: 'debit' | 'credit';
+      amountMinor: string;
+      reason: string;
+      createdAt: string;
+    }[];
+  };
+  reviews: {
+    count: number;
+    items: {
+      id: string;
+      orderId: string;
+      tenantId: string;
+      tenantName: string;
+      rating: number;
+      body: string;
+      status: string;
+      createdAt: string;
+      deletedAt: string | null;
+    }[];
+  };
+  notifications: { count: number; unread: number };
+};
+
+type ClosureRow = {
+  id: string;
+  requested_at: string;
+  completed_at: string | null;
+  retained_summary: Record<string, unknown>;
+};
+
 export type UpdateProfileInput = { displayName: string };
 
 export type UpdatePreferencesInput = {
@@ -168,6 +236,18 @@ const DEVICE_COLUMNS = [
   microUtc('last_seen_at', 'last_seen_at'),
   microUtc('created_at', 'created_at'),
   microUtc('updated_at', 'updated_at'),
+].join(', ');
+
+/** Export caps: a whole-account export stays a bounded document. */
+export const EXPORT_TRANSACTION_LIMIT = 500;
+export const EXPORT_REVIEW_LIMIT = 500;
+const MAX_CLOSURE_REASON = 500;
+
+const CLOSURE_COLUMNS = [
+  'id::text',
+  microUtc('requested_at', 'requested_at'),
+  microUtc('completed_at', 'completed_at'),
+  'retained_summary',
 ].join(', ');
 
 /**
@@ -378,6 +458,414 @@ export class UsersService {
     });
   }
 
+  /**
+   * Self-service account closure (REQUIREMENTS §7.6 retention).
+   *
+   * Nothing is deleted: financial and audit rows must survive for
+   * reconciliation, so the account is marked closed, its display name is
+   * pseudonymised, every session and push device is revoked in the same
+   * transaction, and a durable account_deletion_requests row records what was
+   * kept and why. Calling it twice is safe: the second call returns the record
+   * written by the first and revokes nothing.
+   */
+  async closeAccount(
+    userId: string,
+    input: CloseAccountInput = {},
+  ): Promise<AccountClosureView> {
+    this.assertUuid(userId, 'user');
+    const reason = normalizeClosureReason(input?.reason);
+    return this.withTransaction(undefined, async (tx) => {
+      const current = await tx.query<{
+        id: string;
+        status: string;
+        display_name: string;
+      }>(
+        'select id::text, status, display_name from users where id = $1 for update',
+        [userId],
+      );
+      const user = current.rows[0];
+      if (!user) throw new NotFoundException('User account was not found');
+
+      let displayName = user.display_name;
+      let revokedSessions = 0;
+      let revokedDevices = 0;
+      if (user.status !== 'closed') {
+        displayName = pseudonymFor(userId);
+        await tx.query(
+          `update users
+              set status = 'closed', display_name = $2, updated_at = now()
+            where id = $1`,
+          [userId, displayName],
+        );
+        // A closed account must not keep a usable bearer token or a push
+        // destination; the auth query already rejects a closed user, this makes
+        // the revocation explicit and immediate for every device.
+        const sessions = await tx.query(
+          `update auth_sessions
+              set revoked_at = now(), updated_at = now()
+            where user_id = $1 and revoked_at is null`,
+          [userId],
+        );
+        revokedSessions = sessions.rowCount ?? 0;
+        const devices = await tx.query(
+          `update user_devices
+              set revoked_at = now(), updated_at = now()
+            where user_id = $1 and revoked_at is null`,
+          [userId],
+        );
+        revokedDevices = devices.rowCount ?? 0;
+      }
+
+      const existing = await tx.query<ClosureRow>(
+        `select ${CLOSURE_COLUMNS}
+           from account_deletion_requests
+          where user_id = $1 and status = 'completed'
+          order by requested_at desc, id desc
+          limit 1`,
+        [userId],
+      );
+      if (existing.rows[0]) {
+        const row = existing.rows[0];
+        return {
+          status: 'closed' as const,
+          displayName,
+          closedAt: row.completed_at ?? row.requested_at,
+          requestId: row.id,
+          revokedSessions,
+          retained: row.retained_summary,
+        };
+      }
+
+      const counts = await this.closureCounts(tx, userId);
+      const retained = {
+        policy:
+          'REQUIREMENTS §7.6: transaction and audit records survive account closure for reconciliation; the identity behind them is pseudonymised instead of deleted',
+        closedBy: 'self_service',
+        pseudonymised: ['users.display_name'],
+        revoked: { sessions: revokedSessions, devices: revokedDevices },
+        retained: [
+          {
+            entity: 'users',
+            count: 1,
+            reason:
+              'The account row is kept as a closed shell so orders, reviews and ledger rows keep a valid owner; only the display name was replaced',
+          },
+          {
+            entity: 'orders',
+            count: counts.orders,
+            reason:
+              'Order and price snapshots are financial records; deleting them would break reconciliation and tenant sales history',
+          },
+          {
+            entity: 'ledger_entries',
+            count: counts.ledgerEntries,
+            reason:
+              'Wallet balance is derived from an immutable double-entry ledger that must stay reconcilable',
+          },
+          {
+            entity: 'reviews',
+            count: counts.reviews,
+            reason:
+              'Reviews are tied to a completed order and to tenant ratings; the row stays, the account is pseudonymised',
+          },
+          {
+            entity: 'notifications',
+            count: counts.notifications,
+            reason:
+              'Notification rows are linked to outbox events that must not be replayed',
+          },
+          {
+            entity: 'audit_events',
+            count: counts.auditEvents,
+            reason:
+              'Audit rows record consequential actions and are immutable by design',
+          },
+        ],
+      };
+      const request = await tx.query<ClosureRow>(
+        `insert into account_deletion_requests
+           (user_id, status, reason, retained_summary, requested_at, completed_at,
+            created_at, updated_at)
+         values ($1, 'completed', $2, $3::jsonb, now(), now(), now(), now())
+         returning ${CLOSURE_COLUMNS}`,
+        [userId, reason ?? null, JSON.stringify(retained)],
+      );
+      await this.audit.append(tx, {
+        actor: { userId },
+        scopeType: 'user',
+        scopeId: userId,
+        action: 'user.account.closed',
+        targetType: 'user',
+        targetId: userId,
+        reason: 'Account owner requested account closure',
+        metadata: {
+          revocation: { sessions: revokedSessions, devices: revokedDevices },
+          pseudonymised: ['displayName'],
+          ordersRetained: counts.orders,
+          ledgerEntriesRetained: counts.ledgerEntries,
+        },
+      });
+      const row = request.rows[0];
+      return {
+        status: 'closed' as const,
+        displayName,
+        closedAt: row.completed_at ?? row.requested_at,
+        requestId: row.id,
+        revokedSessions,
+        retained,
+      };
+    });
+  }
+
+  /**
+   * The caller's own data as one JSON document (read-only, no secrets).
+   *
+   * Everything is read in a single transaction so the wallet balance and the
+   * ledger transactions it is derived from cannot disagree, and the phone
+   * number stays masked: an export is not a reason to hand out the raw identity
+   * destination.
+   */
+  async exportAccount(userId: string): Promise<AccountExport> {
+    this.assertUuid(userId, 'user');
+    return this.withTransaction(undefined, async (tx) => {
+      const userResult = await tx.query<{
+        id: string;
+        display_name: string;
+        status: string;
+        phone_e164: string | null;
+        phone_verified: boolean;
+        created_at: string;
+        updated_at: string;
+        exported_at: string;
+      }>(
+        `select u.id::text, u.display_name, u.status, u.phone_e164,
+                (u.phone_verified_at is not null) as phone_verified,
+                ${microUtc('u.created_at', 'created_at')},
+                ${microUtc('u.updated_at', 'updated_at')},
+                ${microUtc('now()', 'exported_at')}
+           from users u
+          where u.id = $1`,
+        [userId],
+      );
+      const user = userResult.rows[0];
+      if (!user) throw new NotFoundException('User account was not found');
+
+      const campusEmail = await tx.query<{
+        campus_id: string;
+        campus_name: string;
+      }>(
+        `select c.id::text as campus_id, c.name as campus_name
+           from campus_email_verifications v
+           join campuses c on c.id = v.campus_id
+          where v.user_id = $1`,
+        [userId],
+      );
+
+      const orderTotals = await tx.query<{
+        status: string;
+        count: string;
+        currency: string;
+        total_minor: string;
+      }>(
+        `select status, count(*)::text as count, currency,
+                coalesce(sum(total_minor), 0)::text as total_minor
+           from orders
+          where buyer_id = $1
+          group by status, currency
+          order by status asc, currency asc`,
+        [userId],
+      );
+
+      const wallet = await tx.query<{
+        currency: string;
+        balance_minor: string;
+      }>(
+        `select currency, balance_minor::text
+           from wallet_accounts
+          where owner_user_id = $1 and account_type = 'wallet'
+          order by currency asc`,
+        [userId],
+      );
+
+      const transactions = await tx.query<{
+        id: string;
+        currency: string;
+        direction: 'debit' | 'credit';
+        amount_minor: string;
+        reason: string;
+        created_at: string;
+      }>(
+        `select t.id::text, t.currency, e.direction, e.amount_minor::text,
+                t.reason,
+                ${microUtc('t.created_at', 'created_at')}
+           from wallet_accounts a
+           join ledger_entries e on e.account_id = a.id
+           join ledger_transactions t on t.id = e.transaction_id
+          where a.owner_user_id = $1 and a.account_type = 'wallet'
+          order by t.created_at desc, t.id desc
+          limit $2`,
+        [userId, EXPORT_TRANSACTION_LIMIT + 1],
+      );
+
+      const reviews = await tx.query<{
+        id: string;
+        order_id: string;
+        tenant_id: string;
+        tenant_name: string;
+        rating: number;
+        body: string;
+        status: string;
+        created_at: string;
+        deleted_at: string | null;
+      }>(
+        `select r.id::text, r.order_id::text, r.tenant_id::text,
+                t.name as tenant_name, r.rating, r.body, r.status,
+                ${microUtc('r.created_at', 'created_at')},
+                ${microUtc('r.deleted_at', 'deleted_at')}
+           from reviews r
+           join tenants t on t.id = r.tenant_id
+          where r.buyer_id = $1
+          order by r.created_at desc, r.id desc
+          limit $2`,
+        [userId, EXPORT_REVIEW_LIMIT],
+      );
+
+      const notifications = await tx.query<{ total: string; unread: string }>(
+        `select count(*)::text as total,
+                count(*) filter (where read_at is null)::text as unread
+           from notifications
+          where recipient_user_id = $1`,
+        [userId],
+      );
+
+      const byStatus = new Map<string, number>();
+      const byCurrency = new Map<string, bigint>();
+      for (const row of orderTotals.rows) {
+        byStatus.set(
+          row.status,
+          (byStatus.get(row.status) ?? 0) + Number(row.count),
+        );
+        byCurrency.set(
+          row.currency,
+          (byCurrency.get(row.currency) ?? BigInt(0)) + BigInt(row.total_minor),
+        );
+      }
+
+      const transactionRows = transactions.rows.slice(
+        0,
+        EXPORT_TRANSACTION_LIMIT,
+      );
+      const email = campusEmail.rows[0];
+      return {
+        exportedAt: user.exported_at,
+        profile: {
+          id: user.id,
+          displayName: user.display_name,
+          status: user.status,
+          createdAt: user.created_at,
+          updatedAt: user.updated_at,
+          phone: {
+            masked: maskPhone(user.phone_e164),
+            verified: user.phone_verified,
+          },
+          campusEmail: {
+            verified: Boolean(email),
+            campusId: email?.campus_id ?? null,
+            campusName: email?.campus_name ?? null,
+          },
+        },
+        orders: {
+          total: [...byStatus.values()].reduce((sum, count) => sum + count, 0),
+          byStatus: [...byStatus.entries()]
+            .map(([status, count]) => ({ status, count }))
+            .sort((left, right) => left.status.localeCompare(right.status)),
+          totalsByCurrency: [...byCurrency.entries()]
+            .map(([currency, totalMinor]) => ({
+              currency,
+              totalMinor: totalMinor.toString(),
+            }))
+            .sort((left, right) => left.currency.localeCompare(right.currency)),
+        },
+        wallet: wallet.rows.map((row) => ({
+          currency: row.currency,
+          availableMinor: row.balance_minor,
+        })),
+        transactions: {
+          count: transactionRows.length,
+          truncated: transactions.rows.length > EXPORT_TRANSACTION_LIMIT,
+          items: transactionRows.map((row) => ({
+            id: row.id,
+            currency: row.currency,
+            direction: row.direction,
+            amountMinor: row.amount_minor,
+            reason: row.reason,
+            createdAt: row.created_at,
+          })),
+        },
+        reviews: {
+          count: reviews.rows.length,
+          items: reviews.rows.map((row) => ({
+            id: row.id,
+            orderId: row.order_id,
+            tenantId: row.tenant_id,
+            tenantName: row.tenant_name,
+            rating: row.rating,
+            body: row.body,
+            status: row.status,
+            createdAt: row.created_at,
+            deletedAt: row.deleted_at,
+          })),
+        },
+        notifications: {
+          count: Number(notifications.rows[0]?.total ?? '0'),
+          unread: Number(notifications.rows[0]?.unread ?? '0'),
+        },
+      };
+    });
+  }
+
+  /** Counts of the rows a closure keeps, so the summary is evidence, not prose. */
+  private async closureCounts(
+    tx: PoolClient,
+    userId: string,
+  ): Promise<{
+    orders: number;
+    ledgerEntries: number;
+    reviews: number;
+    notifications: number;
+    auditEvents: number;
+  }> {
+    const result = await tx.query<{
+      orders: string;
+      ledger_entries: string;
+      reviews: string;
+      notifications: string;
+      audit_events: string;
+    }>(
+      `select
+         (select count(*) from orders where buyer_id = $1)::text as orders,
+         (select count(*)
+            from ledger_entries e
+            join wallet_accounts a on a.id = e.account_id
+           where a.owner_user_id = $1 and a.account_type = 'wallet')::text
+           as ledger_entries,
+         (select count(*) from reviews where buyer_id = $1)::text as reviews,
+         (select count(*) from notifications where recipient_user_id = $1)::text
+           as notifications,
+         (select count(*) from audit_events
+           where scope_type = 'user' and scope_id = $1)::text as audit_events`,
+      [userId],
+    );
+    const row = result.rows[0];
+    return {
+      orders: Number(row?.orders ?? '0'),
+      ledgerEntries: Number(row?.ledger_entries ?? '0'),
+      reviews: Number(row?.reviews ?? '0'),
+      notifications: Number(row?.notifications ?? '0'),
+      auditEvents: Number(row?.audit_events ?? '0'),
+    };
+  }
+
   // -------------------------------------------------------------------------
   // Helpers
   // -------------------------------------------------------------------------
@@ -492,6 +980,32 @@ export class UsersService {
     if (!UUID_PATTERN.test(value ?? ''))
       throw new BadRequestException('Invalid ' + name + ' id');
   }
+}
+
+/**
+ * A closed account keeps its id but loses its name: the pseudonym is stable
+ * (same id -> same label) so support can still talk about one row without
+ * revealing who it was.
+ */
+export function pseudonymFor(userId: string): string {
+  const short = (userId ?? '').replace(/-/g, '').slice(0, 8);
+  return 'Closed account ' + short;
+}
+
+function normalizeClosureReason(value: string | undefined): string | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== 'string')
+    throw new BadRequestException({
+      code: 'ACCOUNT_CLOSURE_REASON_INVALID',
+      message: 'reason must be a string of at most 500 characters',
+    });
+  const normalized = value.trim();
+  if (!normalized || normalized.length > MAX_CLOSURE_REASON)
+    throw new BadRequestException({
+      code: 'ACCOUNT_CLOSURE_REASON_INVALID',
+      message: 'reason must be 1 to 500 characters when provided',
+    });
+  return normalized;
 }
 
 function defaultPreferences(): NotificationPreferences {

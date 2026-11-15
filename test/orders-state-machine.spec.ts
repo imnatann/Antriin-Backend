@@ -990,22 +990,27 @@ async function insertSlot(
     starts_at_text: string;
   }>(
     `INSERT INTO pickup_slots (tenant_id, starts_at, ends_at, capacity, reserved_count, status, updated_at)
-     VALUES ($1,
-       CASE WHEN $2::int IS NULL THEN ($3::date + $4::time)::timestamp AT TIME ZONE 'Asia/Jakarta'
-            ELSE LEAST(
-              now() + ($2::int * interval '1 minute'),
-              (date_trunc('day', now() AT TIME ZONE 'Asia/Jakarta')
-                + interval '23 hours 59 minutes 59 seconds' - interval '60 minutes')
-                AT TIME ZONE 'Asia/Jakarta')
-       END,
-       CASE WHEN $2::int IS NULL THEN ($3::date + $5::time)::timestamp AT TIME ZONE 'Asia/Jakarta'
-            ELSE LEAST(
-              now() + (($2::int + 60) * interval '1 minute'),
-              (date_trunc('day', now() AT TIME ZONE 'Asia/Jakarta')
-                + interval '23 hours 59 minutes 59 seconds')
-                AT TIME ZONE 'Asia/Jakarta')
-       END,
-       $6, 0, 'open', now())
+     SELECT $1,
+            CASE WHEN $2::int IS NULL
+                 THEN ($3::date + $4::time)::timestamp AT TIME ZONE 'Asia/Jakarta'
+                 ELSE base.start_at END,
+            CASE WHEN $2::int IS NULL
+                 THEN ($3::date + $5::time)::timestamp AT TIME ZONE 'Asia/Jakarta'
+                 ELSE base.start_at + interval '60 minutes' END,
+            $6, 0, 'open', now()
+       FROM (
+         -- Late in the local day "now + N minutes" would cross midnight, and a
+         -- slot window may not span two local days. Pull it back inside the day,
+         -- subtracting N seconds so two different offsets never collapse onto
+         -- the same window (pickup_slots_tenant_window_uq).
+         SELECT LEAST(
+                  now() + ($2::int * interval '1 minute'),
+                  (date_trunc('day', now() AT TIME ZONE 'Asia/Jakarta')
+                    + interval '23 hours 59 minutes 59 seconds'
+                    - interval '60 minutes' - ($2::int * interval '1 second'))
+                    AT TIME ZONE 'Asia/Jakarta'
+                ) AS start_at
+       ) base
      RETURNING id, version, to_char(starts_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS starts_at_text`,
     [
       tenantId,

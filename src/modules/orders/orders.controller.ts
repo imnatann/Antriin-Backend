@@ -27,6 +27,7 @@ import { AuthGuard, CurrentUser } from '../auth/auth.guard';
 import type { AuthenticatedPrincipal } from '../auth/auth.guard';
 import {
   BuyerOrderListQueryDto,
+  CancelOrderDto,
   CheckoutDto,
   DecideScheduleProposalDto,
   OrderQuoteDto,
@@ -34,6 +35,7 @@ import {
 import { IDEMPOTENCY_KEY_PATTERN } from './orders.constants';
 import { OrdersService } from './orders.service';
 import {
+  orderCancellationSchema,
   orderEventListSchema,
   orderPageSchema,
   orderQuoteSchema,
@@ -181,6 +183,47 @@ export class OrdersController {
     @Param('orderId', new ParseUUIDPipe()) orderId: string,
   ) {
     return this.orders.getBuyerOrder(principal.userId, orderId);
+  }
+
+  @Post(':orderId/cancellation')
+  @HttpCode(200)
+  @ApiOperation({
+    summary:
+      'Buyer cancels their own order before the tenant acts (capacity released, one full refund pending provider success)',
+  })
+  @ApiOkResponse({
+    description:
+      'Order cancelled (or idempotent replay with meta.replayed=true); the refund stays pending until the provider confirms it',
+    schema: {
+      type: 'object',
+      properties: {
+        data: orderCancellationSchema,
+        meta: {
+          type: 'object',
+          properties: { replayed: { type: 'boolean' } },
+          required: ['replayed'],
+        },
+      },
+      required: ['data', 'meta'],
+    },
+  })
+  @ApiBadRequestResponse({
+    description: 'Missing or too long reason (ORDER_CANCELLATION_REASON_*)',
+  })
+  @ApiConflictResponse({
+    description:
+      'ORDER_CANCELLATION_STATUS_CONFLICT (tenant already acted or the order is terminal), ORDER_CANCELLATION_PICKUP_STARTED, ORDER_CANCELLATION_ALREADY_CANCELLED, or REFUND_ALREADY_EXISTS',
+  })
+  @ApiNotFoundResponse({
+    description: 'Order not found for this buyer',
+  })
+  @ApiUnauthorizedResponse({ description: 'Bearer authentication is required' })
+  cancel(
+    @CurrentUser() principal: AuthenticatedPrincipal,
+    @Param('orderId', new ParseUUIDPipe()) orderId: string,
+    @Body() body: CancelOrderDto,
+  ) {
+    return this.orders.cancelByBuyer(principal.userId, orderId, body.reason);
   }
 
   @Get(':orderId/events')

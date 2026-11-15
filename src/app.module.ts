@@ -1,4 +1,5 @@
 import { Module } from '@nestjs/common';
+import { APP_GUARD } from '@nestjs/core';
 import { CoreModule } from './config/core.module';
 import { HealthModule } from './modules/health/health.module';
 import { AuthModule } from './modules/auth/auth.module';
@@ -20,10 +21,15 @@ import { ReviewsModule } from './modules/reviews/reviews.module';
 import { RiskModule } from './modules/risk/risk.module';
 import { DiscoveryModule } from './modules/discovery/discovery.module';
 import { MediaModule } from './modules/media/media.module';
+import { EventsModule } from './modules/events/events.module';
 import { NotificationsModule } from './modules/notifications/notifications.module';
 import { AuditModule } from './modules/audit/audit.module';
 import { ReportingModule } from './modules/reporting/reporting.module';
 import { ApiGuideModule } from './modules/api-guide/api-guide.module';
+import { MetricsModule } from './modules/metrics/metrics.module';
+import { InvitesModule } from './modules/invites/invites.module';
+import { RateLimitModule } from './common/rate-limit.module';
+import { RateLimitGuard } from './common/rate-limit.guard';
 @Module({
   imports: [
     CoreModule,
@@ -47,10 +53,21 @@ import { ApiGuideModule } from './modules/api-guide/api-guide.module';
     RiskModule,
     DiscoveryModule,
     MediaModule,
+    EventsModule,
     NotificationsModule,
     AuditModule,
     ReportingModule,
     ApiGuideModule,
+    MetricsModule,
+    InvitesModule,
+    RateLimitModule,
+  ],
+  providers: [
+    // Global, so a new public route is rate limited by default instead of
+    // inheriting the protection of whichever module happened to own it.
+    // Registered here rather than inside RateLimitModule because APP_GUARD is
+    // only honoured from the root module's injector.
+    { provide: APP_GUARD, useClass: RateLimitGuard },
   ],
 })
 export class AppModule {}

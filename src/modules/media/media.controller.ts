@@ -35,6 +35,7 @@ import { createReadStream } from 'node:fs';
 import { AuthGuard, CurrentUser } from '../auth/auth.guard';
 import type { AuthenticatedPrincipal } from '../auth/auth.guard';
 import { MediaService } from './media.service';
+import { MEDIA_MODERATION_STATUSES } from './media.constants';
 import { UploadMediaQueryDto } from './dto/media.dto';
 
 const mediaAssetSchema = {
@@ -52,6 +53,17 @@ const mediaAssetSchema = {
     height: { type: 'integer', nullable: true },
     checksumSha256: { type: 'string', pattern: '^[0-9a-f]{64}$' },
     originalFilename: { type: 'string' },
+    metadataStripped: {
+      type: 'boolean',
+      description:
+        'True when embedded metadata (EXIF/XMP/IPTC/comments) was removed before the bytes were stored, so the stored size and checksum differ from the upload.',
+    },
+    moderationStatus: {
+      type: 'string',
+      enum: [...MEDIA_MODERATION_STATUSES],
+      description:
+        'Review state. Read-only: no scanner is integrated, so uploads stay unreviewed.',
+    },
     createdAt: { type: 'string', format: 'date-time' },
   },
   required: [
@@ -64,6 +76,8 @@ const mediaAssetSchema = {
     'height',
     'checksumSha256',
     'originalFilename',
+    'metadataStripped',
+    'moderationStatus',
     'createdAt',
   ],
 };
@@ -121,7 +135,7 @@ export class MediaController {
   @ApiOperation({
     summary: 'Upload one image',
     description:
-      'Accepts a single multipart file part named "file" with purpose given as a query parameter. The content type is verified against the file header, not trusted from the client; only JPEG, PNG and WebP up to the advertised size are stored. The response url can be used directly as a menu item imageRef.',
+      'Accepts a single multipart file part named "file" with purpose given as a query parameter. The content type is verified against the file header, not trusted from the client; only JPEG, PNG and WebP up to the advertised size are stored. Embedded metadata (EXIF/GPS, XMP, IPTC, comments) is removed before the bytes are written, so the stored size and checksum describe the stripped file; metadataStripped reports whether anything was removed. The response url can be used directly as a menu item imageRef. Moderation state is reported (moderationStatus) but there is no endpoint to change it.',
   })
   @ApiCreatedResponse({ description: 'Stored asset', schema: createdResponse })
   @ApiBadRequestResponse({
@@ -236,6 +250,8 @@ export class MediaController {
     height: number | null;
     checksumSha256: string;
     originalFilename: string;
+    metadataStripped: boolean;
+    moderationStatus: string;
     createdAt: string;
   }) {
     return {
@@ -248,6 +264,10 @@ export class MediaController {
       height: asset.height,
       checksumSha256: asset.checksumSha256,
       originalFilename: asset.originalFilename,
+      metadataStripped: asset.metadataStripped,
+      // Read-only: served so a client can see that nothing has reviewed the
+      // image. No endpoint writes it.
+      moderationStatus: asset.moderationStatus,
       createdAt: asset.createdAt,
     };
   }

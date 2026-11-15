@@ -1,7 +1,6 @@
 import { Module } from '@nestjs/common';
 import { CoreModule } from './config/core.module';
 import { JobsModule } from './jobs/jobs.module';
-import { MaintenanceProcessor } from './jobs/maintenance.processor';
 import { OutboxModule } from './modules/notifications/outbox.module';
 import { PaymentsModule } from './modules/payments/payments.module';
 import { RefundsModule } from './modules/refunds/refunds.module';
@@ -28,8 +27,10 @@ import {
     RefundsModule,
     PayoutsModule,
   ],
+  // MaintenanceProcessor (healthcheck + the scheduled maintenance sweepers and
+  // risk detectors) is provided by JobsModule, which also owns the queue
+  // registration and their database/audit dependencies.
   providers: [
-    MaintenanceProcessor,
     OutboxDispatcher,
     OutboxProcessor,
     PaymentRequestDispatcher,

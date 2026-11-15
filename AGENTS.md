@@ -25,7 +25,11 @@ Panduan ini berlaku untuk seluruh repository `Antriin-Backend`. Baca sebelum men
 
 ## Status fondasi
 
-Fondasi health telah dilengkapi implementasi OTP/sesi melalui port delivery, verifikasi kampus terpisah, permission granular/membership, wallet/ledger double-entry, audit immutable, serta outbox/notifikasi dalam aplikasi. Adapter OTP default menolak pengiriman; pengiriman eksternal dan uang nyata belum aktif. Order, katalog/availability, pickup, top-up/refund, settlement/payout dan ulasan sudah diimplementasikan; risk dan profil `/me` masih scaffold — jangan menganggap modul scaffold sebagai fitur selesai. Lihat status dan bukti terbaru pada `docs/BACKEND-BACKLOG.md`; keputusan pilot yang didelegasikan pengguna ada di `docs/PILOT-POLICY.md`.
+Fondasi health telah dilengkapi implementasi OTP/sesi melalui port delivery, verifikasi kampus terpisah, permission granular/membership, wallet/ledger double-entry, audit immutable, serta outbox/notifikasi dalam aplikasi. Adapter OTP default menolak pengiriman; pengiriman eksternal dan uang nyata belum aktif.
+
+**Tidak ada modul scaffold lagi.** Order, katalog/availability, pickup, top-up/refund, settlement/payout, ulasan, profil `/me`, penemuan publik, antrean risiko, unggah media dan reporting sudah diimplementasikan dan diuji terhadap PostgreSQL. Yang belum ada adalah integrasi vendor dan lapisan operasional, bukan modul kosong: provider OTP/QRIS/refund/payout, push, object storage, TLS/backup/monitoring, dan keputusan angka (fee, pajak, refund parsial, SLA). Jangan menulis ulang `/me` atau risk — keduanya selesai.
+
+Sebelum mengubah apa pun, baca status dan bukti terbaru pada `docs/BACKEND-BACKLOG.md`; keputusan pilot yang didelegasikan pengguna ada di `docs/PILOT-POLICY.md`.
 
 ## Cara mengerjakan perubahan
 

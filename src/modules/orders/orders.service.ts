@@ -20,8 +20,11 @@ import { OutboxService } from '../notifications/outbox.service';
 import { WalletService } from '../wallet/wallet.service';
 import { generateOrderNumber } from './order-number';
 import {
+  BUYER_CANCELLABLE_STATUSES,
+  BUYER_CANCELLATION_AUDIT_ACTION,
   IDEMPOTENCY_KEY_PATTERN,
   IDEMPOTENCY_RETENTION_DAYS,
+  MAX_CANCELLATION_REASON_LENGTH,
   MAX_CHECKOUT_LINES,
   MAX_IDEMPOTENCY_KEY_LENGTH,
   MAX_ITEM_NOTES_LENGTH,
@@ -260,6 +263,29 @@ export interface OrderRefundDecisionResult {
 }
 
 /**
+ * The single refund intent attached to a cancelled order. Only the refund's
+ * own worker (refunds slice) may move money; the orders slice reads the row so
+ * the buyer sees what is pending.
+ */
+export interface OrderCancellationRefundView {
+  id: string;
+  status: string;
+  amountMinor: string;
+  currency: 'IDR';
+  requestedAt: string;
+}
+
+/** Buyer-cancellation outcome (POST /v1/orders/:orderId/cancellation). */
+export interface OrderCancellationView {
+  orderId: string;
+  orderNumber: string;
+  status: 'cancelled';
+  version: number;
+  cancelledAt: string;
+  refund: OrderCancellationRefundView;
+}
+
+/**
  * Read-only contract for the settlements slice: everything the release needs
  * to derive the amount and prove the order may be released. Amounts and status
  * come from database rows, never from the caller.
@@ -315,6 +341,18 @@ interface OrderRow {
 
 interface LockedOrderRow extends OrderRow {
   preparation_allowed: boolean;
+}
+
+interface BuyerCancellationLockRow extends OrderRow {
+  pickup_started: boolean;
+}
+
+interface RefundSummaryRow {
+  id: string;
+  status: string;
+  amount_minor: string;
+  currency: string;
+  requested_at_text: string;
 }
 
 interface OrderItemRow {
@@ -1675,6 +1713,313 @@ export class OrdersService {
   }
 
   // ---------------------------------------------------------------------------
+  // Buyer-initiated cancellation (B2)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * POST /v1/orders/:orderId/cancellation — a buyer withdraws their own order
+   * before the tenant acts and before the pickup window opens.
+   *
+   * WHY THIS IS NOT A PILOT-POLICY CONFLICT
+   * docs/PILOT-POLICY.md keeps "pembatalan operasional sebelum handover"
+   * (operational cancellation before handover) with an authorized campus
+   * manager, and that is exactly what it stays: an order the tenant already
+   * accepted, is preparing, or made ready cannot be cancelled by the buyer —
+   * those transitions return 409 and the manager/case path remains the only
+   * route. This endpoint covers the earlier state in which the tenant has done
+   * NOTHING (`paid_awaiting_tenant`) and the pickup window has not started:
+   * no kitchen time was committed, no food was produced and no other buyer was
+   * turned away. Money follows the same locked rule either way — one full
+   * refund intent that stays PENDING until the provider confirms success, with
+   * no wallet credit from this path — so the pilot's financial invariants
+   * ("refund penuh satu kali", "wallet hanya dikredit sesudah provider
+   * konfirmasi") are unchanged; only the moment at which a buyer may ask moves
+   * earlier, which is the one interval in which cancelling costs nobody.
+   *
+   * ONE TRANSACTION (order row locked FOR UPDATE of the buyer first):
+   *   precondition check -> orders.status='cancelled' + cancelled_at + version
+   *   bump -> capacity reservation released (idempotent, never twice) ->
+   *   refunds row 'requested' + refund_request_outbox row -> order event ->
+   *   immutable audit -> buyer/tenant outbox notification.
+   *
+   * The refunds slice stays the ONLY writer of money: the refund row it will
+   * process is the same pending intent the campus decision writes (same
+   * constraint `refunds_one_per_order_uq`, same provider 'sandbox', same
+   * refund_request_outbox queue), and the refunds worker alone can credit the
+   * wallet after a verified provider success. The insert lives here because
+   * the intent must be atomic with the cancellation and the refunds API
+   * authorizes a campus manager, which a buyer does not and must not need.
+   *
+   * Idempotent: replaying the call for an order that is already cancelled
+   * returns the SAME outcome with meta.replayed = true and writes nothing
+   * (no second release, no second refund, no duplicate event/audit/outbox).
+   */
+  async cancelByBuyer(
+    buyerId: string,
+    orderId: string,
+    reason: string,
+  ): Promise<{ data: OrderCancellationView; meta: { replayed: boolean } }> {
+    this.assertUuid(buyerId, 'buyer id');
+    this.assertUuid(orderId, 'order id');
+    const trimmedReason = typeof reason === 'string' ? reason.trim() : '';
+    if (!trimmedReason) {
+      throw new BadRequestException({
+        code: 'ORDER_CANCELLATION_REASON_REQUIRED',
+        message: 'A cancellation reason is required',
+      });
+    }
+    if (trimmedReason.length > MAX_CANCELLATION_REASON_LENGTH) {
+      throw new BadRequestException({
+        code: 'ORDER_CANCELLATION_REASON_TOO_LONG',
+        message: `The cancellation reason must be at most ${MAX_CANCELLATION_REASON_LENGTH} characters`,
+      });
+    }
+
+    return this.withTransaction(async (client) => {
+      // Scoped by buyer_id: another buyer's order is a 404, never a 403.
+      const order = await this.lockBuyerOrderForCancellation(
+        client,
+        buyerId,
+        orderId,
+      );
+      if (!order) throw new NotFoundException('Order not found');
+
+      const cancelledAtText = order.cancelled_at_text;
+      if (order.status === 'cancelled' && cancelledAtText) {
+        // Idempotent replay. The order may have been cancelled by this buyer
+        // (this path) or by an authorized campus decision; in both cases the
+        // outcome a buyer observes is the same: cancelled + one refund intent.
+        const existing = await this.loadOrderRefundSummary(client, orderId);
+        if (!existing) {
+          throw new ConflictException({
+            code: 'ORDER_CANCELLATION_ALREADY_CANCELLED',
+            message:
+              'Order is already cancelled and carries no refund to report',
+          });
+        }
+        return {
+          data: this.mapOrderCancellation(
+            order,
+            existing,
+            cancelledAtText,
+            order.version,
+          ),
+          meta: { replayed: true },
+        };
+      }
+
+      if (!BUYER_CANCELLABLE_STATUSES.includes(order.status)) {
+        throw new ConflictException({
+          code: 'ORDER_CANCELLATION_STATUS_CONFLICT',
+          message: `Order is ${order.status}; a buyer may cancel only before the tenant acts (${BUYER_CANCELLABLE_STATUSES.join(', ')})`,
+        });
+      }
+      if (order.pickup_started) {
+        throw new ConflictException({
+          code: 'ORDER_CANCELLATION_PICKUP_STARTED',
+          message:
+            'The pickup window has already started; the buyer can no longer cancel this order',
+        });
+      }
+
+      // 1. Full refund only: the amount comes from the captured payment row,
+      //    never from client input.
+      const payment = await client.query<{
+        id: string;
+        amount_minor: string;
+        currency: string;
+      }>(
+        `SELECT id, amount_minor::text AS amount_minor, currency
+           FROM order_payments
+          WHERE order_id = $1 AND status = 'succeeded'
+          ORDER BY created_at, id
+          LIMIT 1`,
+        [orderId],
+      );
+      const captured = payment.rows[0];
+      if (!captured) {
+        throw new ConflictException({
+          code: 'ORDER_PAYMENT_NOT_REFUNDABLE',
+          message: 'Order has no successful payment that could be refunded',
+        });
+      }
+      if (captured.currency !== 'IDR') {
+        throw new ConflictException({
+          code: 'REFUND_CURRENCY_UNSUPPORTED',
+          message: 'Only IDR refunds are supported in the pilot',
+        });
+      }
+
+      // 2. Cancel the order itself. The status guard makes a concurrent
+      //    cancellation (manager decision or a parallel replay) lose cleanly
+      //    instead of releasing capacity twice.
+      const updated = await client.query<{
+        version: number;
+        cancelled_at_text: string;
+      }>(
+        `UPDATE orders
+            SET status = 'cancelled', cancelled_at = now(),
+                version = version + 1, updated_at = now()
+          WHERE id = $1 AND buyer_id = $2 AND status = 'paid_awaiting_tenant'
+          RETURNING version,
+                    ${TS('cancelled_at')} AS cancelled_at_text`,
+        [orderId, buyerId],
+      );
+      if (updated.rowCount !== 1) {
+        throw new ConflictException({
+          code: 'ORDER_CANCELLATION_STATUS_CONFLICT',
+          message: 'Order changed; reload and retry',
+        });
+      }
+
+      // 3. Give the seat back exactly once. A missing reservation row means the
+      //    seat was never held, which is not a failure for the cancellation.
+      try {
+        await this.availability.releaseReservation(
+          client,
+          order.tenant_id,
+          orderId,
+        );
+      } catch (error) {
+        if (!(error instanceof NotFoundException)) throw error;
+      }
+
+      // 4. The tenant's campus, derived from the locked order's tenant.
+      const tenant = await client.query<{ campus_id: string }>(
+        'SELECT campus_id FROM tenants WHERE id = $1',
+        [order.tenant_id],
+      );
+      const campusId = tenant.rows[0]?.campus_id;
+      if (!campusId) {
+        throw new ConflictException({
+          code: 'ORDER_CANCELLATION_CAMPUS_MISSING',
+          message: 'Order tenant has no campus; a refund cannot be routed',
+        });
+      }
+
+      // 5. Pending refund intent + provider-request queue row. No wallet credit
+      //    happens here: the refunds worker processes this row outside any lock
+      //    and credits ONLY after a verified provider success.
+      let refundId: string;
+      try {
+        const inserted = await client.query<{ id: string }>(
+          `INSERT INTO refunds
+             (campus_id, tenant_id, order_id, order_payment_id, case_id,
+              buyer_id, amount_minor, currency, status, provider, reason,
+              requested_by_user_id, decided_by_user_id, requested_at,
+              attempt_count, version, created_at, updated_at)
+           VALUES ($1,$2,$3,$4,NULL,$5,$6,'IDR','requested','sandbox',$7,
+                   $5,NULL, now(), 0, 1, now(), now())
+           RETURNING id`,
+          [
+            campusId,
+            order.tenant_id,
+            orderId,
+            captured.id,
+            buyerId,
+            captured.amount_minor,
+            trimmedReason,
+          ],
+        );
+        refundId = inserted.rows[0].id;
+      } catch (error) {
+        if (this.isUniqueViolation(error, 'refunds_one_per_order_uq')) {
+          throw new ConflictException({
+            code: 'REFUND_ALREADY_EXISTS',
+            message: 'This order already has a live or succeeded refund',
+          });
+        }
+        throw error;
+      }
+      await client.query(
+        `INSERT INTO refund_request_outbox
+           (refund_id, status, attempts, next_attempt_at, created_at, updated_at)
+         VALUES ($1, 'pending', 0, now(), now(), now())`,
+        [refundId],
+      );
+      const refundRow = await this.loadOrderRefundSummary(client, orderId);
+      if (!refundRow) {
+        throw new ConflictException({
+          code: 'REFUND_NOT_FOUND',
+          message: 'Refund intent could not be read back',
+        });
+      }
+
+      // 6. Append-only lifecycle event, immutable audit and outbox trail.
+      await this.appendOrderEvent(client, {
+        orderId,
+        eventType: 'order.cancelled',
+        fromStatus: 'paid_awaiting_tenant',
+        toStatus: 'cancelled',
+        actorUserId: buyerId,
+        reason: trimmedReason,
+        metadata: {
+          initiatedBy: 'buyer',
+          refundId,
+          refundStatus: refundRow.status,
+          refundAmountMinor: captured.amount_minor,
+          currency: 'IDR',
+          releasedSlotId: order.pickup_slot_id,
+          refundExecution:
+            'refunds module after provider success + dedupe; no wallet credit in orders',
+        },
+      });
+      await this.audit.append(client, {
+        actor: { userId: buyerId },
+        scopeType: 'tenant',
+        scopeId: order.tenant_id,
+        action: BUYER_CANCELLATION_AUDIT_ACTION,
+        targetType: 'order',
+        targetId: orderId,
+        reason: trimmedReason,
+        metadata: {
+          fromStatus: 'paid_awaiting_tenant',
+          toStatus: 'cancelled',
+          orderNumber: order.order_number,
+          refundId,
+          refundAmountMinor: captured.amount_minor,
+          currency: 'IDR',
+        },
+      });
+      // The buyer needs their own confirmation and the tenant queue needs to
+      // drop the order; recipients are derived inside this transaction.
+      const staff = await this.tenantStaffRecipients(client, order.tenant_id);
+      await this.outbox.append(client, {
+        eventKey: `order.cancelled:${orderId}`,
+        eventType: 'order.status_changed',
+        aggregateType: 'order',
+        aggregateId: orderId,
+        recipientIds: [order.buyer_id, ...staff].slice(0, 100),
+      });
+      await this.outbox.append(client, {
+        eventKey: `refund:${refundId}:requested`,
+        eventType: 'refund.status_changed',
+        aggregateType: 'refund',
+        aggregateId: refundId,
+        recipientIds: [order.buyer_id],
+      });
+
+      return {
+        data: {
+          orderId,
+          orderNumber: order.order_number,
+          status: 'cancelled',
+          version: updated.rows[0].version,
+          cancelledAt: updated.rows[0].cancelled_at_text,
+          refund: {
+            id: refundRow.id,
+            status: refundRow.status,
+            amountMinor: refundRow.amount_minor,
+            currency: 'IDR',
+            requestedAt: refundRow.requested_at_text,
+          },
+        },
+        meta: { replayed: false },
+      };
+    });
+  }
+
+  // ---------------------------------------------------------------------------
   // Internal helpers
   // ---------------------------------------------------------------------------
 
@@ -2240,6 +2585,48 @@ export class OrdersService {
     return result.rows[0];
   }
 
+  /**
+   * Locks the buyer's own order for a buyer cancellation and reports whether
+   * the pickup window already started. Scoped by buyer_id, so another buyer's
+   * order is 'not found' (404) instead of 'forbidden' (no existence leak), and
+   * the window is compared in the database so the decision uses the same clock
+   * as the rest of the transaction.
+   */
+  private async lockBuyerOrderForCancellation(
+    client: PoolClient,
+    buyerId: string,
+    orderId: string,
+  ): Promise<BuyerCancellationLockRow | undefined> {
+    const result = await client.query<BuyerCancellationLockRow>(
+      `SELECT ${ORDER_COLUMNS}, (o.pickup_starts_at <= now()) AS pickup_started
+         ${ORDER_FROM}
+        WHERE o.id = $1 AND o.buyer_id = $2
+        FOR UPDATE OF o`,
+      [orderId, buyerId],
+    );
+    return result.rows[0];
+  }
+
+  /**
+   * Latest refund intent of an order (there is at most one live one thanks to
+   * `refunds_one_per_order_uq`). Read-only: the orders slice never moves money.
+   */
+  private async loadOrderRefundSummary(
+    client: PoolClient,
+    orderId: string,
+  ): Promise<RefundSummaryRow | undefined> {
+    const result = await client.query<RefundSummaryRow>(
+      `SELECT id, status, amount_minor::text AS amount_minor, currency,
+              ${TS('requested_at')} AS requested_at_text
+         FROM refunds
+        WHERE order_id = $1
+        ORDER BY created_at DESC, id DESC
+        LIMIT 1`,
+      [orderId],
+    );
+    return result.rows[0];
+  }
+
   private async loadOrderView(
     client: PoolClient,
     orderId: string,
@@ -2521,6 +2908,28 @@ export class OrdersService {
       completedAt: order.completed_at_text,
       declinedAt: order.declined_at_text,
       cancelledAt: order.cancelled_at_text,
+    };
+  }
+
+  private mapOrderCancellation(
+    order: OrderRow,
+    refund: RefundSummaryRow,
+    cancelledAt: string,
+    version: number,
+  ): OrderCancellationView {
+    return {
+      orderId: order.id,
+      orderNumber: order.order_number,
+      status: 'cancelled',
+      version,
+      cancelledAt,
+      refund: {
+        id: refund.id,
+        status: refund.status,
+        amountMinor: refund.amount_minor,
+        currency: 'IDR',
+        requestedAt: refund.requested_at_text,
+      },
     };
   }
 

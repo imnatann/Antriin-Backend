@@ -67,3 +67,15 @@ export class RegisterDeviceDto {
   @MaxLength(100)
   label?: string;
 }
+
+/**
+ * Body of POST /me/deletion. The request itself is the confirmation, so the
+ * reason is optional; it is stored on the closure record, never on the user.
+ */
+export class CloseAccountDto {
+  @ApiPropertyOptional({ maxLength: 500 })
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
+  reason?: string;
+}
