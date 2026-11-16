@@ -149,19 +149,25 @@ jobs:
           ssh -i ~/.ssh/deploy_key -o BatchMode=yes "$DEPLOY_USER@$DEPLOY_HOST" \
             "docker logout ghcr.io >/dev/null 2>&1 && echo 'ghcr logout ok'" || true
 
+      # The API port is published on the host loopback only; nginx terminates
+      # TLS on 443 and proxies to it. Verifying the old http://host:3000 would
+      # fail even when the deployment is perfectly healthy, which is exactly
+      # what happened when the proxy was introduced.
       - name: Verify the public endpoint
         env:
+          PUBLIC_BASE_URL: ${{ secrets.PUBLIC_BASE_URL }}
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
-          APP_PORT: ${{ env.APP_PORT }}
         run: |
           set -euo pipefail
+          BASE_URL="${PUBLIC_BASE_URL:-https://$DEPLOY_HOST}"
+          echo "verifying $BASE_URL"
           for attempt in $(seq 1 15); do
-            if curl --fail --silent --max-time 5 "http://$DEPLOY_HOST:$APP_PORT/api/v1/health/ready"; then
+            if curl --fail --silent --show-error --max-time 10 "$BASE_URL/api/v1/health/ready"; then
               echo
-              echo "public endpoint healthy"
+              echo "public endpoint healthy at $BASE_URL"
               exit 0
             fi
             sleep 3
           done
-          echo "public endpoint did not answer on port $APP_PORT" >&2
+          echo "public endpoint did not answer at $BASE_URL" >&2
           exit 1
