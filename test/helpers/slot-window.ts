@@ -45,7 +45,8 @@ export function sameDaySlotWindow(
     // shifts the clamped end: different offsets always yield different
     // windows, and the shift stays under an hour so the window keeps its day.
     const shiftSeconds = ((Math.trunc(offsetMinutes) % 3600) + 3600) % 3600;
-    end = localMidnightEpoch(localDayIndex(start) + 1) - 1000 - shiftSeconds * 1000;
+    end =
+      localMidnightEpoch(localDayIndex(start) + 1) - 1000 - shiftSeconds * 1000;
     start = end - durationMs;
     clamped = true;
   }
