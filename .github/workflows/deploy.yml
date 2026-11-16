@@ -155,7 +155,10 @@ jobs:
       # what happened when the proxy was introduced.
       - name: Verify the public endpoint
         env:
-          PUBLIC_BASE_URL: ${{ secrets.PUBLIC_BASE_URL }}
+          # A repository variable, not a secret: the public URL is not
+          # sensitive and an operator should be able to see which address is
+          # verified. Falls back to the bare host when unset.
+          PUBLIC_BASE_URL: ${{ vars.PUBLIC_BASE_URL }}
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
         run: |
           set -euo pipefail
