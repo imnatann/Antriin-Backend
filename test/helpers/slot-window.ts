@@ -39,8 +39,13 @@ export function sameDaySlotWindow(
 
   let clamped = false;
   if (localDayIndex(start) !== localDayIndex(end)) {
-    // End just before the current local midnight, keeping the duration.
-    end = localMidnightEpoch(localDayIndex(start) + 1) - 1000;
+    // Pull the window back inside the day, keeping the duration. Two calls in
+    // the same test would otherwise clamp onto the exact same instant and
+    // violate pickup_slots_tenant_window_uq, so the requested offset also
+    // shifts the clamped end: different offsets always yield different
+    // windows, and the shift stays under an hour so the window keeps its day.
+    const shiftSeconds = ((Math.trunc(offsetMinutes) % 3600) + 3600) % 3600;
+    end = localMidnightEpoch(localDayIndex(start) + 1) - 1000 - shiftSeconds * 1000;
     start = end - durationMs;
     clamped = true;
   }

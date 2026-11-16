@@ -367,24 +367,53 @@ describe('Xendit webhook HTTP contract', () => {
     assert.equal(stub.received[0].event.reference, 'antriin-abc');
   });
 
-  it('rejects a malformed or incomplete callback before any state change', async () => {
-    const bodies = [
+  it('answers 200 and ignores a callback that carries no reference', async () => {
+    // Xendit posts every product's events to the configured URL, and its
+    // dashboard "test webhook" button sends a sample payload with no top-up
+    // reference (it is a payment-token sample). Neither can ever be about one
+    // of our intents, and a 4xx would be retried forever.
+    stub.received.length = 0;
+    for (const payload of [
       { ...callbackBody(), reference_id: undefined },
-      { ...callbackBody(), status: 'NOT_A_STATUS' },
-      { ...callbackBody(), amount: 'not-a-number' },
-      { ...callbackBody(), currency: 'RUPIAH' },
-    ];
-    for (const payload of bodies) {
-      stub.received.length = 0;
+      { event: 'payment_token', data: { id: 'pt_123', status: 'SUCCEEDED' } },
+    ]) {
       const response = await app.inject({
         method: 'POST',
         url,
         headers: { 'x-callback-token': CALLBACK_TOKEN },
         payload,
       });
-      assert.equal(response.statusCode, 400, JSON.stringify(payload));
-      assert.equal(stub.received.length, 0);
+      assert.equal(response.statusCode, 200, JSON.stringify(payload));
+      const body = response.json() as { data: { outcome: string } };
+      assert.equal(body.data.outcome, 'ignored');
     }
+    // Nothing was handed to the settlement logic: there is no reference to
+    // correlate, so there is nothing to record.
+    assert.equal(stub.received.length, 0);
+  });
+
+  it('forwards an incomplete but reference-bearing callback so the service can decide', async () => {
+    // A payload may omit amount/currency/status. Whether that is harmless or a
+    // mismatch depends on whether the reference matches a stored intent, which
+    // only the service can answer after a lookup.
+    stub.received.length = 0;
+    const response = await app.inject({
+      method: 'POST',
+      url,
+      headers: { 'x-callback-token': CALLBACK_TOKEN },
+      payload: {
+        event: 'qr.payment',
+        id: 'qrpy_partial',
+        reference_id: 'antriin-abc',
+      },
+    });
+    assert.equal(response.statusCode, 200);
+    assert.equal(stub.received.length, 1);
+    const { event } = stub.received[0];
+    assert.equal(event.reference, 'antriin-abc');
+    assert.equal(event.status, null);
+    assert.equal(event.amountMinor, null);
+    assert.equal(event.currency, null);
   });
 
   it('derives a stable event id when Xendit sends no payment id', async () => {

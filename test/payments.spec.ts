@@ -739,6 +739,56 @@ describe(
       assert.equal(await balanceOf(userId), '0');
     });
 
+    it('refuses to credit when a callback for a real intent omits amount or currency', async () => {
+      // A provider that posts a partial payload for a reference we DO hold must
+      // not be assumed to have the right amount: there is nothing to compare,
+      // so the only safe answer is a recorded mismatch with no credit.
+      const userId = await newUser();
+      const intent = await ctx.payments.createTopupIntent(userId, {
+        amountMinor: '50000',
+        idempotencyKey: randomUUID(),
+      });
+      for (const partial of [
+        {
+          eventId: randomUUID(),
+          reference: intent.view.providerReference,
+          status: 'succeeded' as const,
+          amountMinor: null,
+          currency: 'IDR',
+          occurredAt: new Date().toISOString(),
+        },
+        {
+          eventId: randomUUID(),
+          reference: intent.view.providerReference,
+          status: 'succeeded' as const,
+          amountMinor: '50000',
+          currency: null,
+          occurredAt: new Date().toISOString(),
+        },
+        {
+          eventId: randomUUID(),
+          reference: intent.view.providerReference,
+          status: null,
+          amountMinor: '50000',
+          currency: 'IDR',
+          occurredAt: new Date().toISOString(),
+        },
+      ]) {
+        const result = await ctx.payments.handleProviderEvent(
+          Buffer.from(JSON.stringify(partial), 'utf8'),
+          partial,
+          'sandbox',
+        );
+        assert.equal(result.kind, 'mismatch', JSON.stringify(partial));
+      }
+      assert.equal(await balanceOf(userId), '0');
+      const row = await pool.query<{ status: string }>(
+        'select status from topup_intents where id = $1',
+        [intent.view.id],
+      );
+      assert.equal(row.rows[0].status, 'pending');
+    });
+
     it('rejects an unmatched reference without credit', async () => {
       const userId = await newUser();
       const { rawBody, body } = event({

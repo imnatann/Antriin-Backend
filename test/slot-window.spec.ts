@@ -44,6 +44,16 @@ describe('sameDaySlotWindow', () => {
     assert.ok(startsAt < endsAt);
   });
 
+  it('gives every offset a distinct window', () => {
+    // pickup_slots_tenant_window_uq is unique on (tenant, starts_at, ends_at).
+    // Once a window is clamped it no longer depends on "now", so without the
+    // offset-based shift two calls in one test would collide.
+    const windows = [30, 120, 300, 600, 900].map((offsetMinutes) =>
+      sameDaySlotWindow({ offsetMinutes }).startsAt.toISOString(),
+    );
+    assert.equal(new Set(windows).size, windows.length);
+  });
+
   it('keeps a late-night window in the future', () => {
     // Late-evening runs are the ones that used to fail; the window must still
     // end after now so the slot stays bookable.

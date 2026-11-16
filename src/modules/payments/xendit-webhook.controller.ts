@@ -91,6 +91,17 @@ export class XenditWebhookController {
     this.assertCallbackToken(request.headers[XENDIT_CALLBACK_TOKEN_HEADER]);
 
     const event = this.parseEvent(body);
+    if (!event)
+      // Nothing to correlate: no reference means this callback cannot be about
+      // a top-up. Answering 2xx keeps Xendit from retrying a payload that will
+      // never become actionable, and lets the dashboard's test probe save the
+      // URL. Nothing is recorded because there is no reference to file it under.
+      return {
+        data: {
+          outcome: 'ignored',
+          note: 'Callback carries no reference_id; not a top-up notification',
+        },
+      };
     const result = await this.payments.handleProviderEvent(
       // The raw bytes are hashed for dedupe, so the exact payload that was
       // signed is what gets recorded rather than a re-serialised copy.
@@ -170,7 +181,7 @@ export class XenditWebhookController {
    * status still identify the transition, and the payload hash recorded by the
    * service keeps two different payments from colliding.
    */
-  private parseEvent(body: unknown): ProviderTopupEvent {
+  private parseEvent(body: unknown): ProviderTopupEvent | null {
     if (typeof body !== 'object' || body === null)
       throw new BadRequestException({
         code: 'PAYMENT_EVENT_INVALID',
@@ -182,26 +193,25 @@ export class XenditWebhookController {
         ? (envelope.data as Record<string, unknown>)
         : envelope;
 
+    // Only the reference decides whether this callback can concern us at all.
+    // Xendit delivers every product's events to whatever URL is configured, so
+    // a payload without a reference (a dashboard test probe, a product we do
+    // not use) is ordinary traffic and must not be answered with a 4xx: Xendit
+    // retries those forever. 200 + ignored is the honest response.
     const reference = payload.reference_id ?? envelope.reference_id;
-    if (typeof reference !== 'string' || reference.length === 0)
-      throw new BadRequestException({
-        code: 'PAYMENT_EVENT_INVALID',
-        message: 'Callback is missing reference_id',
-      });
+    if (typeof reference !== 'string' || reference.length === 0) return null;
 
     const rawStatus = payload.status ?? envelope.status;
     const status =
       typeof rawStatus === 'string'
-        ? STATUS_MAP[rawStatus.toUpperCase()]
+        ? (STATUS_MAP[rawStatus.toUpperCase()] ?? null)
         : null;
-    if (!status)
-      throw new BadRequestException({
-        code: 'PAYMENT_EVENT_INVALID',
-        message: 'Callback has an unrecognised status',
-      });
 
-    // Xendit sends the amount as a JSON number; it is an integer in the
-    // smallest currency unit, which is exactly our money model.
+    // Amount and currency are parsed when present and left null otherwise.
+    // They are only needed to correlate against a stored intent, and the
+    // service decides that after looking the reference up: a callback for an
+    // unknown reference has nothing to compare against, while a callback that
+    // DOES match an intent but omits them is a mismatch that must not credit.
     const rawAmount = payload.amount ?? envelope.amount;
     const amount =
       typeof rawAmount === 'number'
@@ -209,18 +219,14 @@ export class XenditWebhookController {
         : typeof rawAmount === 'string'
           ? Number(rawAmount)
           : NaN;
-    if (!Number.isSafeInteger(amount) || amount <= 0)
-      throw new BadRequestException({
-        code: 'PAYMENT_EVENT_INVALID',
-        message: 'Callback has an invalid amount',
-      });
+    const amountMinor =
+      Number.isSafeInteger(amount) && amount > 0 ? String(amount) : null;
 
-    const currency = payload.currency ?? envelope.currency;
-    if (typeof currency !== 'string' || !/^[A-Z]{3}$/.test(currency))
-      throw new BadRequestException({
-        code: 'PAYMENT_EVENT_INVALID',
-        message: 'Callback has an invalid currency',
-      });
+    const rawCurrency = payload.currency ?? envelope.currency;
+    const currency =
+      typeof rawCurrency === 'string' && /^[A-Z]{3}$/.test(rawCurrency)
+        ? rawCurrency
+        : null;
 
     const created = payload.created ?? envelope.created;
     const occurredAt =
@@ -230,20 +236,14 @@ export class XenditWebhookController {
 
     const paymentId = payload.id ?? envelope.id;
     const qrId = payload.qr_id ?? envelope.qr_id;
+    const statusKey = status ?? 'unknown';
     const eventId =
       typeof paymentId === 'string' && paymentId.length > 0
         ? paymentId
         : typeof qrId === 'string' && qrId.length > 0
-          ? qrId + ':' + status
-          : reference + ':' + status;
+          ? qrId + ':' + statusKey
+          : reference + ':' + statusKey;
 
-    return {
-      eventId,
-      reference,
-      status,
-      amountMinor: String(amount),
-      currency,
-      occurredAt,
-    };
+    return { eventId, reference, status, amountMinor, currency, occurredAt };
   }
 }

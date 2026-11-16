@@ -45,9 +45,17 @@ export interface ProviderTopupEvent {
   eventId: string;
   /** Provider reference that must match a stored top-up intent. */
   reference: string;
-  status: 'pending' | 'succeeded' | 'failed' | 'expired';
-  amountMinor: string;
-  currency: string;
+  /**
+   * Null when the payload does not carry a status this domain understands.
+   * A provider sends callbacks for many products to one endpoint, so an
+   * unrecognised shape is normal traffic, not a client error: the service
+   * decides whether it matters by looking the reference up first.
+   */
+  status: 'pending' | 'succeeded' | 'failed' | 'expired' | null;
+  /** Null when absent: only needed to correlate against a found intent. */
+  amountMinor: string | null;
+  /** Null when absent: only needed to correlate against a found intent. */
+  currency: string | null;
   /** When the provider says the state occurred (may be historical). */
   occurredAt: string;
 }
@@ -421,7 +429,10 @@ export class PaymentsService {
           eventId: event.eventId,
           payloadHash,
           topupId: null,
-          providerStatus: event.status,
+          // 'pending' is the only honest placeholder when the payload carried
+          // no status this domain understands: it asserts no outcome. The row
+          // exists so the delivery is visible during reconciliation.
+          providerStatus: event.status ?? 'pending',
           outcome: 'unmatched',
           occurredAt,
           provider,
@@ -434,7 +445,7 @@ export class PaymentsService {
         eventId: event.eventId,
         payloadHash,
         topupId: intent.id,
-        providerStatus: event.status,
+        providerStatus: event.status ?? 'pending',
         outcome: correlation.outcome,
         occurredAt,
         provider,
@@ -707,6 +718,14 @@ export class PaymentsService {
       status: TopupIntentStatus;
     },
   ): Correlation {
+    // A callback that reached a real intent must carry everything needed to
+    // verify it. Missing fields are a mismatch, never an assumption: crediting
+    // on an event we could not fully compare is exactly how money goes wrong.
+    if (event.status === null) return { outcome: 'mismatch', reason: 'state' };
+    if (event.currency === null)
+      return { outcome: 'mismatch', reason: 'currency' };
+    if (event.amountMinor === null)
+      return { outcome: 'mismatch', reason: 'amount' };
     if (event.status === 'pending') return { outcome: 'ignored' };
     if (event.currency !== intent.currency)
       return { outcome: 'mismatch', reason: 'currency' };
