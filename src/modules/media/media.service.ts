@@ -108,8 +108,29 @@ export class MediaService implements OnModuleInit {
     this.maxBytes = config.getOrThrow<number>('MEDIA_MAX_BYTES');
   }
 
+  /**
+   * Creates MEDIA_ROOT at boot.
+   *
+   * Failing here refuses to start the API, which is deliberate: an upload
+   * endpoint that cannot store a file is worse than a service that will not
+   * boot. The error names the resolved path and the running user because the
+   * raw ENOENT/EACCES gives an operator nothing to act on — in a container the
+   * cause is almost always a directory owned by another user.
+   */
   async onModuleInit(): Promise<void> {
-    await mkdir(this.root, { recursive: true });
+    try {
+      await mkdir(this.root, { recursive: true });
+    } catch (error) {
+      throw new Error(
+        'MEDIA_ROOT is not writable: ' +
+          this.root +
+          ' (running as uid ' +
+          String(process.getuid?.() ?? 'unknown') +
+          '). Create the directory and grant ownership, or point MEDIA_ROOT ' +
+          'at a writable path.',
+        { cause: error },
+      );
+    }
   }
 
   /** Advertised upload limits, so a client can check a file before sending it. */

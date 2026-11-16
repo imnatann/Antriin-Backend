@@ -75,6 +75,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+    volumes:
+      - media_data:/app/storage
     healthcheck:
       test:
         [
@@ -99,8 +101,15 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+    # Same media volume as the API: the tombstone sweeper runs here and must
+    # see the files the API wrote.
+    volumes:
+      - media_data:/app/storage
     logging: *default-logging
 
 volumes:
   postgres_data:
   redis_data:
+  # Uploaded images. Without this, every recreate of the API container would
+  # silently drop every menu photo and case attachment.
+  media_data:

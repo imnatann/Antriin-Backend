@@ -19,6 +19,7 @@ import {
   RefundsService,
 } from '../src/modules/refunds/refunds.service';
 import { CasesService } from '../src/modules/cases/cases.service';
+import { sameDaySlotWindow } from './helpers/slot-window';
 
 const testDatabaseUrl = process.env.TEST_DATABASE_URL;
 
@@ -172,13 +173,15 @@ async function createOrder(
 ) {
   const amountMinor = opts.amountMinor ?? '50000';
   const status = opts.status ?? 'paid_awaiting_tenant';
+  // Relative window kept inside one tenant-local day (see helpers/slot-window).
+  const window = sameDaySlotWindow({ offsetMinutes: 120, durationMinutes: 60 });
   const slotId = (
     await pool.query<{ id: string }>(
       `insert into pickup_slots
          (tenant_id, starts_at, ends_at, capacity, reserved_count, status, version, created_at, updated_at)
-       values ($1, now() + interval '2 hours', now() + interval '3 hours', 5, 1, 'open', 1, now(), now())
+       values ($1, $2, $3, 5, 1, 'open', 1, now(), now())
        returning id`,
-      [env.tenantId],
+      [env.tenantId, window.startsAt, window.endsAt],
     )
   ).rows[0].id;
   const buyerWallet = await wallet.getOrCreateWallet(env.buyerId, 'IDR');
@@ -219,10 +222,18 @@ async function createOrder(
            (buyer_id, tenant_id, pickup_slot_id, tenant_name_snapshot, tenant_timezone_snapshot,
             pickup_starts_at, pickup_ends_at, status, currency, subtotal_minor, total_minor,
             paid_at, created_at, updated_at)
-         values ($1, $2, $3, $4, 'Asia/Jakarta', now() + interval '2 hours', now() + interval '3 hours',
+         values ($1, $2, $3, $4, 'Asia/Jakarta', $6, $7,
                  'paid_awaiting_tenant', 'IDR', $5, $5, now(), now(), now())
          returning id`,
-        [env.buyerId, env.tenantId, slotId, 'Tenant ' + env.tag, amountMinor],
+        [
+          env.buyerId,
+          env.tenantId,
+          slotId,
+          'Tenant ' + env.tag,
+          amountMinor,
+          window.startsAt,
+          window.endsAt,
+        ],
       )
     ).rows[0].id;
   }

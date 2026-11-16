@@ -5,6 +5,7 @@ import { randomUUID } from 'node:crypto';
 import { Pool } from 'pg';
 import type { DatabaseService } from '../src/database/database.service';
 import { DiscoveryService } from '../src/modules/discovery/discovery.service';
+import { sameDaySlotWindow } from './helpers/slot-window';
 
 const testDatabaseUrl = process.env.TEST_DATABASE_URL;
 
@@ -85,18 +86,21 @@ async function createSlot(
   },
 ) {
   const duration = options.durationMinutes ?? 60;
+  // Relative window kept inside one tenant-local day (see helpers/slot-window).
+  const window = sameDaySlotWindow({
+    offsetMinutes: options.startInMinutes,
+    durationMinutes: duration,
+  });
   const result = await pool.query<{ id: string }>(
     `insert into pickup_slots
        (tenant_id, starts_at, ends_at, capacity, reserved_count, status,
         version, created_at, updated_at)
-     values ($1, now() + ($2::int * interval '1 minute'),
-             now() + (($2::int + $3::int) * interval '1 minute'),
-             $4, $5, $6, 1, now(), now())
+     values ($1, $2, $3, $4, $5, $6, 1, now(), now())
      returning id`,
     [
       tenantId,
-      options.startInMinutes,
-      duration,
+      window.startsAt,
+      window.endsAt,
       options.capacity ?? 5,
       options.reservedCount ?? 0,
       options.status ?? 'open',

@@ -19,6 +19,11 @@ WORKDIR /app
 COPY package*.json ./
 RUN npm ci --omit=dev && npm cache clean --force
 COPY --from=build /app/dist ./dist
+# Uploaded images live here (MEDIA_ROOT defaults to ./storage/media). The
+# directory must exist and belong to the runtime user: the process runs as
+# `node`, /app is owned by root, so a missing directory makes the first
+# mkdir fail and takes the whole API down at boot.
+RUN mkdir -p /app/storage/media && chown -R node:node /app/storage
 USER node
 EXPOSE 3000
 CMD ["node", "dist/main.js"]

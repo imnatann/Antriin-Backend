@@ -80,7 +80,13 @@ async function bootstrap() {
     config.getOrThrow<string>('HOST'),
   );
 }
-void bootstrap().catch(() => {
-  console.error('API startup failed; verify configuration and dependencies.');
+void bootstrap().catch((error: unknown) => {
+  // Log the actual failure. Swallowing it once turned a one-line permission
+  // problem (a non-writable MEDIA_ROOT) into an outage that could only be
+  // diagnosed by re-running the image by hand.
+  console.error(
+    'API startup failed; verify configuration and dependencies.',
+    error,
+  );
   process.exitCode = 1;
 });

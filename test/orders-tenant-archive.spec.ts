@@ -14,6 +14,7 @@ import { OrdersService } from '../src/modules/orders/orders.service';
 import { TenantOperatingHoursService } from '../src/modules/tenants/tenant-operating-hours.service';
 import { TenantsService } from '../src/modules/tenants/tenants.service';
 import { WalletService } from '../src/modules/wallet/wallet.service';
+import { sameDaySlotWindow } from './helpers/slot-window';
 
 const testDatabaseUrl = process.env.TEST_DATABASE_URL;
 const ITEM_PRICE_MINOR = 30000;
@@ -231,9 +232,12 @@ async function insertSlot(
   pool: Pool,
   tenantId: string,
 ): Promise<{ id: string; version: number }> {
+  // A relative window that never straddles tenant-local midnight, so the
+  // suite does not fail purely because CI runs late in the day.
+  const window = sameDaySlotWindow();
   const result = await pool.query<{ id: string; version: number }>(
-    "INSERT INTO pickup_slots (tenant_id, starts_at, ends_at, capacity, reserved_count, status, updated_at) VALUES ($1, now() + interval '30 minutes', now() + interval '90 minutes', 5, 0, 'open', now()) RETURNING id, version",
-    [tenantId],
+    "INSERT INTO pickup_slots (tenant_id, starts_at, ends_at, capacity, reserved_count, status, updated_at) VALUES ($1, $2, $3, 5, 0, 'open', now()) RETURNING id, version",
+    [tenantId, window.startsAt, window.endsAt],
   );
   return result.rows[0];
 }
