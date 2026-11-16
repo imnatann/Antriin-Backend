@@ -1,6 +1,9 @@
-# Modul Payments (top-up AntriPay — sandbox)
+# Modul Payments (top-up AntriPay)
 
-Slice `payments-impl` (task-4). Status: **sandbox/stub terkontrol**, belum ada provider uang nyata.
+Slice `payments-impl` (task-4), diperluas dengan adapter **Xendit sandbox**. Status: dua adapter
+tersedia — stub `sandbox` tanpa jaringan, dan `xendit` yang benar-benar memanggil API QR Xendit
+dengan kredensial test mode. **Uang nyata tetap belum aktif**: `NODE_ENV=production` menolak
+keduanya.
 QRIS hanya untuk **top-up wallet buyer**; pembayaran order memakai wallet (slice lain). Tidak ada
 endpoint yang memungkinkan klien mengkredit saldo secara langsung — saldo hanya bergerak lewat
 `WalletService.postTransfer` (ledger double-entry) yang dipicu webhook provider tervalidasi.
@@ -10,8 +13,11 @@ Slice ini **tidak** menulis `ledger_entries` langsung dan **tidak** mengubah wal
 
 ## Konfigurasi (dimiliki root — src/config/environment.ts)
 
-- `PAYMENTS_PROVIDER_MODE` = `disabled` | `sandbox`; production **hanya** `disabled`.
+- `PAYMENTS_PROVIDER_MODE` = `disabled` | `sandbox` | `xendit`; production **hanya** `disabled`.
   Saat `disabled`, pembuatan intent dan webhook ditolak `503 PAYMENTS_PROVIDER_DISABLED` (tidak pura-pura sukses).
+- `XENDIT_SECRET_KEY` (wajib saat mode `xendit`) — secret key **test mode** (`xnd_development_...`). Validasi menolak key produksi.
+- `XENDIT_CALLBACK_TOKEN` (wajib saat mode `xendit`) — verification token dari dashboard; dibandingkan constant-time.
+- `XENDIT_API_BASE_URL` (default `https://api.xendit.co`) — dapat diarahkan ke stub lokal pada test.
 - `PAYMENTS_TOPUP_MIN_MINOR` (default 1000), `PAYMENTS_TOPUP_MAX_MINOR` (default 2000000) — batas inklusif integer minor IDR.
 - `PAYMENTS_SANDBOX_WEBHOOK_SECRET` (>= 32 char, wajib saat sandbox) — kunci HMAC webhook.
 - `PAYMENTS_SANDBOX_TOPUP_TTL_SECONDS` (integer 60..86400, default 3600) — umur `expires_at` intent top-up sandbox. Dibaca service via `ConfigService.getOrThrow` (konstanta `SANDBOX_TOPUP_TTL_SECONDS` = default/fallback untuk test).
@@ -89,6 +95,33 @@ Fungsi murni deterministik, **tanpa jaringan nyata dan tanpa uang nyata**:
 - `createPaymentRequest` mengonfirmasi referensi (melempar `PermanentPaymentRequestError` bila bentuk tak terduga).
 - Menolak beroperasi saat `NODE_ENV='production'` (`503 PAYMENTS_PROVIDER_DISABLED`). Adapter Midtrans/QRIS produksi **tidak** dibuat (butuh provider/kontrak/kredensial nyata).
 
+## Adapter Xendit sandbox
+
+`src/modules/payments/xendit.adapter.ts` — `XenditPaymentsAdapter`. Berbeda dari stub pada dua hal penting:
+
+- **QR diterbitkan provider.** `POST /qr_codes` (header `api-version: 2022-07-31`, Basic auth = secret key) mengembalikan `qr_string` sekali; nilainya tidak bisa dihitung ulang dari baris database, jadi disimpan di `topup_intents.qr_string` (migrasi `0014`). Stub mengisi kolom ini `null` karena ia merender sendiri.
+- **Kegagalan dibedakan.** HTTP 429/5xx dan gangguan jaringan = _transient_ (processor backoff, jatah retry tidak terbakar). 4xx lain = _permanent_ (`PermanentPaymentRequestError`), termasuk bila Xendit membalas `reference_id` yang berbeda atau tanpa `qr_string` — QR seperti itu tidak boleh sampai ke pembeli.
+
+`reference_id` = `antriin-<sha256(userId|idempotencyKey|requestHash).slice(0,48)>`, deterministik sehingga retry intent yang sama tidak membuat QR kedua. Header `idempotency-key` ikut dikirim.
+
+## Webhook Xendit
+
+`POST /api/v1/webhooks/payments/xendit`, terpisah dari webhook sandbox karena **cara autentikasinya berbeda**:
+
+|                | Sandbox                                        | Xendit                                                       |
+| -------------- | ---------------------------------------------- | ------------------------------------------------------------ |
+| Autentikasi    | HMAC-SHA256 atas `timestamp + '.' + rawBody`   | header statis `x-callback-token`, dibandingkan constant-time |
+| Jendela replay | 300 detik                                      | tidak ada (token statis)                                     |
+| Body           | DTO ketat (`whitelist + forbidNonWhitelisted`) | dibaca defensif, bukan DTO                                   |
+
+Body Xendit **tidak** divalidasi DTO karena ValidationPipe global memakai `forbidNonWhitelisted`: Xendit mengirim field yang tidak kita modelkan (`basket`, `payment_detail`, `channel_code`), sehingga DTO akan menolak setiap callback asli. Field dibaca satu per satu dengan validasi eksplisit; yang hilang/aneh dijawab 400 sebelum ada perubahan state.
+
+Pemetaan status: `SUCCEEDED`/`COMPLETED`/`PAID` → `succeeded`; `EXPIRED` → `expired`; `FAILED` → `failed`; `ACTIVE`/`PENDING` → `pending` (diabaikan oleh logika settlement). Kedua bentuk payload diterima: datar maupun `{ event, data }`.
+
+`eventId` memakai id pembayaran Xendit bila ada (unik per pembayaran); bila tidak, `<qr_id>:<status>` sebagai gantinya. Yang terakhir bisa bertabrakan untuk dua pembayaran berbeda pada QR yang sama, dan di situlah `payload_hash` yang dicatat service membedakannya.
+
+Token callback yang tidak dikonfigurasi **menolak** semua callback (fail closed), bukan menerima semuanya.
+
 ## Keputusan & asumsi
 
 - TTL sandbox dibaca dari `PAYMENTS_SANDBOX_TOPUP_TTL_SECONDS` (default 3600; konstanta `SANDBOX_TOPUP_TTL_SECONDS` jadi default/fallback test). `expires_at` diisi saat insert (`now() + TTL`, memenuhi CHECK `expires_at > created_at`). **Expiry bersifat informasional**: tidak ada sweeper otomatis pada wave ini, sehingga intent yang lewat `expires_at` TETAP `pending` sampai ada event provider (`expired`/`failed`/`succeeded`) — status tidak berubah sendiri hanya karena umur.
@@ -100,12 +133,14 @@ Fungsi murni deterministik, **tanpa jaringan nyata dan tanpa uang nyata**:
 ## Batasan (stub vs siap pakai)
 
 - **Siap pakai (sandbox)**: intent + idempotency + outbox atomik, processor lease/retry/backoff/dead, webhook HMAC + dedupe + korelasi + kredit ledger tepat sekali + audit + outbox notifikasi, endpoint baca buyer ter-scope.
-- **Stub/belum**: tidak ada provider QRIS/Midtrans nyata, tidak ada uang nyata, tidak ada expiry sweeper otomatis, `needs_assistance` belum dipakai, rekonsiliasi/alarm mismatch beyond pencatatan `payment_provider_events`.
+- **Xendit sandbox (sudah diuji)**: pembuatan QR sungguhan ke `api.xendit.co`, callback dengan token asli, kredit wallet tepat sekali, replay menghasilkan `duplicate`.
+- **Belum**: uang nyata (production tetap `disabled`), expiry sweeper untuk `expires_at` (sekarang ada, lihat job `expire-topup-intents`), `needs_assistance` belum dipakai, rekonsiliasi/alarm mismatch di luar pencatatan `payment_provider_events`, dan jalur manual untuk event `succeeded` yang datang setelah intent `expired` (dikorelasikan sebagai `mismatch`, tidak dikredit).
 
 ## Test
 
 - `test/payments.spec.ts` — PostgreSQL nyata: intent+outbox atomik & rollback, replay idempotency, reuse key beda amount, batas/non-integer IDR, mode disabled, production menolak sandbox, composite FK cross-user (23503), processor (complete/idempotent, dead permanen, defer backoff, cap attempts, lease fencing), webhook service-level (kredit tepat sekali + audit/outbox/ledger seimbang, dedupe, mismatch amount/currency/reference, late success, failed, pending ignored, dua webhook paralel event-id beda & sama).
 - `test/payments-http.spec.ts` — HTTP (Fastify + `rawBody`): signature benar -> kredit; signature salah / timestamp basi / header hilang -> 401 tanpa kredit & tanpa event; provider tak didukung -> 404; buyer auth, forbidNonWhitelisted menolak field suntikan, list/detail ter-scope (404 lintas user), tidak ada route kredit langsung.
+- `test/xendit-payments.spec.ts` — adapter (dengan `fetch` di-stub): header Basic/api-version/idempotency, amount sebagai number, 429/5xx transient vs 4xx permanent, reference/QR tidak cocok ditolak, key hilang = permanent; webhook: token salah/hilang 401 tanpa menyentuh service, normalisasi field, pemetaan semua status, bentuk `{event,data}`, body cacat 400, eventId turunan saat id tidak ada, mode disabled 503.
 
 Menjalankan (Node 24, DB slice `antriin_payments`, migrasi 0006+0007 diterapkan):
 

@@ -13,7 +13,6 @@ import { DatabaseService } from '../../database/database.service';
 import { AuditService } from '../audit/audit.service';
 import { OutboxService, uuidPattern } from '../notifications/outbox.service';
 import { WalletService } from '../wallet/wallet.service';
-import type { SandboxWebhookEventDto } from './dto/sandbox-webhook.dto';
 import {
   PAYMENTS_PROVIDER_ADAPTER,
   PermanentPaymentRequestError,
@@ -32,6 +31,26 @@ const REQUEST_BACKOFF_MAX_SECONDS = 300;
 export const MAX_PAYMENT_REQUEST_ATTEMPTS = 5;
 /** System ledger account that funds sandbox top-up credits. */
 export const SANDBOX_TOPUP_CLEARING_ACCOUNT = 'payments.sandbox.topup-clearing';
+
+/**
+ * Normalized provider event every webhook controller must produce.
+ *
+ * Each gateway has its own payload shape and its own way of proving the
+ * request is genuine; that translation happens in the controller, so the
+ * service only ever deals with this one shape. Keeping it explicit is what
+ * lets a second provider be added without touching the crediting logic.
+ */
+export interface ProviderTopupEvent {
+  /** Provider-side dedupe key; unique per (provider, eventId). */
+  eventId: string;
+  /** Provider reference that must match a stored top-up intent. */
+  reference: string;
+  status: 'pending' | 'succeeded' | 'failed' | 'expired';
+  amountMinor: string;
+  currency: string;
+  /** When the provider says the state occurred (may be historical). */
+  occurredAt: string;
+}
 export const PAYMENTS_QUEUE_JOB_NAME = 'request';
 /**
  * Default/fallback sandbox top-up intent time-to-live in seconds. The
@@ -113,6 +132,7 @@ type TopupIntentRow = {
   updated_at: Date;
   expires_at: Date | null;
   succeeded_at: Date | null;
+  qr_string: string | null;
 };
 
 type Correlation =
@@ -126,7 +146,8 @@ type Cursor = { createdAt: string; id: string };
 const INTENT_COLUMNS =
   'id::text, user_id::text, wallet_account_id::text, provider, ' +
   'provider_reference, request_hash, amount_minor::text, currency, ' +
-  'status, status_version, created_at, updated_at, expires_at, succeeded_at';
+  'status, status_version, created_at, updated_at, expires_at, succeeded_at, ' +
+  'qr_string';
 
 @Injectable()
 export class PaymentsService {
@@ -140,14 +161,28 @@ export class PaymentsService {
     private readonly adapter: TopupProviderAdapter,
   ) {}
 
-  /** Effective mode; production is always treated as disabled. */
-  providerMode(): 'disabled' | 'sandbox' {
+  /**
+   * Effective mode; production is always treated as disabled, so a test key
+   * can never be mistaken for a working gateway.
+   */
+  providerMode(): 'disabled' | 'sandbox' | 'xendit' {
+    const mode = this.config.getOrThrow<string>('PAYMENTS_PROVIDER_MODE');
+    // Production keeps the local stub out (it exists only for tests) but may
+    // run the Xendit integration: the config layer refuses any key that is not
+    // xnd_development_*, and a test key cannot move real money.
     if (this.config.getOrThrow<string>('NODE_ENV') === 'production')
-      return 'disabled';
-    return this.config.getOrThrow<string>('PAYMENTS_PROVIDER_MODE') ===
-      'sandbox'
-      ? 'sandbox'
-      : 'disabled';
+      return mode === 'xendit' ? 'xendit' : 'disabled';
+    return mode === 'sandbox' || mode === 'xendit' ? mode : 'disabled';
+  }
+
+  /** True whenever a provider is selected; the adapter decides the rest. */
+  private get providerEnabled(): boolean {
+    return this.providerMode() !== 'disabled';
+  }
+
+  /** Provider name written to every row this service creates. */
+  private get providerName(): string {
+    return this.adapter.provider;
   }
 
   /**
@@ -162,7 +197,7 @@ export class PaymentsService {
   ): Promise<CreateTopupIntentResult> {
     if (!uuidPattern.test(userId))
       throw new BadRequestException('Invalid user');
-    if (this.providerMode() !== 'sandbox')
+    if (!this.providerEnabled)
       throw new ServiceUnavailableException({
         code: 'PAYMENTS_PROVIDER_DISABLED',
         message: 'Top-up is currently unavailable',
@@ -175,7 +210,7 @@ export class PaymentsService {
           userId,
           amountMinor,
           currency: 'IDR',
-          provider: 'sandbox',
+          provider: this.providerName,
           idempotencyKey,
         }),
       )
@@ -202,7 +237,7 @@ export class PaymentsService {
            (user_id, wallet_account_id, provider, provider_reference,
             idempotency_key, request_hash, amount_minor, currency,
             status, status_version, created_at, updated_at, expires_at)
-         values ($1, $2, 'sandbox', $3, $4, $5, $6, 'IDR', 'pending', 1,
+         values ($1, $2, $8, $3, $4, $5, $6, 'IDR', 'pending', 1,
                  now(), now(), now() + make_interval(secs => $7::int))
          on conflict (user_id, idempotency_key) do nothing
          returning ${INTENT_COLUMNS}`,
@@ -214,6 +249,7 @@ export class PaymentsService {
           requestHash,
           amountMinor,
           ttlSeconds,
+          this.providerName,
         ],
       );
       let row = inserted.rows[0];
@@ -222,8 +258,8 @@ export class PaymentsService {
         await client.query(
           `insert into payment_request_outbox
              (topup_id, provider, status, attempts, available_at, created_at, updated_at)
-           values ($1, 'sandbox', 'pending', 0, now(), now(), now())`,
-          [row.id],
+           values ($1, $2, 'pending', 0, now(), now(), now())`,
+          [row.id, this.providerName],
         );
         await this.audit.append(client, {
           actor: { userId },
@@ -232,9 +268,9 @@ export class PaymentsService {
           action: 'topup.created',
           targetType: 'topup_intent',
           targetId: row.id,
-          reason: 'Buyer requested a sandbox QRIS top-up',
+          reason: 'Buyer requested a QRIS top-up',
           metadata: {
-            provider: 'sandbox',
+            provider: this.providerName,
             amountMinor: row.amount_minor,
             currency: 'IDR',
           },
@@ -338,12 +374,21 @@ export class PaymentsService {
    */
   async handleProviderEvent(
     rawBody: Buffer,
-    event: SandboxWebhookEventDto,
+    event: ProviderTopupEvent,
+    provider: string,
   ): Promise<WebhookHandleResult> {
-    if (this.providerMode() !== 'sandbox')
+    if (!this.providerEnabled)
       throw new ServiceUnavailableException({
         code: 'PAYMENTS_PROVIDER_DISABLED',
         message: 'Top-up webhooks are not accepted while payments are disabled',
+      });
+    // A callback for a provider that is not the selected one is refused rather
+    // than applied: it would move money through a gateway this deployment is
+    // not running.
+    if (provider !== this.providerName)
+      throw new ServiceUnavailableException({
+        code: 'PAYMENTS_PROVIDER_MISMATCH',
+        message: 'Webhook provider does not match the configured provider',
       });
     const payloadHash = createHash('sha256').update(rawBody).digest('hex');
     const occurredAt = new Date(event.occurredAt);
@@ -365,9 +410,9 @@ export class PaymentsService {
         `select id::text, user_id::text, wallet_account_id::text,
                 amount_minor::text, currency, status, status_version
            from topup_intents
-          where provider = 'sandbox' and provider_reference = $1
+          where provider = $2 and provider_reference = $1
           for update`,
-        [event.reference],
+        [event.reference, provider],
       );
       const intent = intentResult.rows[0];
       if (!intent) {
@@ -379,6 +424,7 @@ export class PaymentsService {
           providerStatus: event.status,
           outcome: 'unmatched',
           occurredAt,
+          provider,
         });
         return { kind: 'unmatched' as const };
       }
@@ -391,6 +437,7 @@ export class PaymentsService {
         providerStatus: event.status,
         outcome: correlation.outcome,
         occurredAt,
+        provider,
       });
       if (!inserted) {
         const existing = await client.query<{
@@ -398,8 +445,8 @@ export class PaymentsService {
           outcome: string;
         }>(
           `select payload_hash, outcome from payment_provider_events
-            where provider = 'sandbox' and event_id = $1`,
-          [event.eventId],
+            where provider = $2 and event_id = $1`,
+          [event.eventId, provider],
         );
         if (existing.rows[0].payload_hash !== payloadHash)
           // Same event id, different payload: refuse, change nothing.
@@ -468,10 +515,9 @@ export class PaymentsService {
         action: 'topup.' + terminal,
         targetType: 'topup_intent',
         targetId: intent.id,
-        reason:
-          'Validated sandbox provider event moved the top-up to ' + terminal,
+        reason: 'Validated provider event moved the top-up to ' + terminal,
         metadata: {
-          provider: 'sandbox',
+          provider,
           amountMinor: intent.amount_minor,
           currency: 'IDR',
         },
@@ -588,6 +634,7 @@ export class PaymentsService {
       return { outcome: 'dead', attempts, errorCode: 'INTENT_NOT_FOUND' };
     }
     let providerReference: string;
+    let qrPayload: string | null = null;
     try {
       // No transaction or row lock is held during the provider call.
       const registered = await this.adapter.createPaymentRequest({
@@ -597,6 +644,9 @@ export class PaymentsService {
         currency: intent.currency,
       });
       providerReference = registered.providerReference;
+      // A real provider issues the QR string once, in this response; it can
+      // never be recomputed, so it is stored before the row is marked complete.
+      if (registered.qrPayload) qrPayload = registered.qrPayload;
     } catch (error) {
       const code = providerErrorCode(error);
       if (
@@ -638,13 +688,19 @@ export class PaymentsService {
         returning id::text`,
       [topupId, leaseToken],
     );
+    if (qrPayload)
+      await this.database.pool.query(
+        `update topup_intents set qr_string = $2, updated_at = now()
+          where id = $1 and qr_string is null`,
+        [topupId, qrPayload],
+      );
     if (completed.rowCount === 0)
       return { outcome: 'skipped', reason: 'lease_lost' };
     return { outcome: 'completed', attempts };
   }
 
   private correlate(
-    event: SandboxWebhookEventDto,
+    event: ProviderTopupEvent,
     intent: {
       amount_minor: string;
       currency: string;
@@ -673,13 +729,14 @@ export class PaymentsService {
       providerStatus: string;
       outcome: string;
       occurredAt: Date;
+      provider: string;
     },
   ): Promise<boolean> {
     const result = await client.query(
       `insert into payment_provider_events
          (provider, event_id, payload_hash, topup_id, provider_status,
           outcome, occurred_at, received_at)
-       values ('sandbox', $1, $2, $3, $4, $5, $6, now())
+       values ($7, $1, $2, $3, $4, $5, $6, now())
        on conflict (provider, event_id) do nothing
        returning id::text`,
       [
@@ -689,6 +746,7 @@ export class PaymentsService {
         input.providerStatus,
         input.outcome,
         input.occurredAt,
+        input.provider,
       ],
     );
     return (result.rowCount ?? 0) > 0;
@@ -781,16 +839,19 @@ export class PaymentsService {
       updatedAt: row.updated_at.toISOString(),
       expiresAt: row.expires_at ? row.expires_at.toISOString() : null,
       succeededAt: row.succeeded_at ? row.succeeded_at.toISOString() : null,
-      qrisPayload:
-        includeQris &&
-        row.status === 'pending' &&
-        this.providerMode() === 'sandbox'
-          ? this.adapter.renderQrisPayload({
+      // Two sources, one field: a provider-issued QR is served exactly as the
+      // gateway returned it, while the sandbox stub renders its deterministic
+      // string from the row. Only a pending intent shows a payable payload.
+      qrisPayload: !includeQris
+        ? null
+        : row.status !== 'pending'
+          ? null
+          : (row.qr_string ??
+            this.adapter.renderQrisPayload({
               providerReference: row.provider_reference,
               amountMinor: row.amount_minor,
               currency: row.currency,
-            })
-          : null,
+            })),
     };
   }
 

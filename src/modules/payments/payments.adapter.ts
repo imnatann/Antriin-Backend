@@ -23,9 +23,10 @@ export interface ProviderIntentInput {
 }
 
 /**
- * Port for top-up payment providers. Only the controlled sandbox stub exists;
- * production QRIS/Midtrans adapters require real contracts and credentials
- * and are intentionally not implemented in this slice.
+ * Port for top-up payment providers. Two implementations exist: the
+ * deterministic sandbox stub (no network) and the Xendit QR adapter
+ * (test-mode keys). Both are refused when NODE_ENV=production, because
+ * production money still needs a contract and live credentials.
  */
 export interface TopupProviderAdapter {
   readonly provider: string;
@@ -35,12 +36,16 @@ export interface TopupProviderAdapter {
     idempotencyKey: string;
     requestHash: string;
   }): string;
-  /** Buyer-facing payment payload (sandbox QRIS mock string). */
+  /**
+   * A locally renderable payment payload, when the provider allows one.
+   * A real provider issues the QR string itself, so this returns null and the
+   * caller serves the stored value instead.
+   */
   renderQrisPayload(input: {
     providerReference: string;
     amountMinor: string;
     currency: string;
-  }): string;
+  }): string | null;
   /**
    * Registers the payment request with the provider. Called by the request
    * processor OUTSIDE any database transaction or row lock. Implementations
@@ -48,7 +53,7 @@ export interface TopupProviderAdapter {
    */
   createPaymentRequest(
     intent: ProviderIntentInput,
-  ): Promise<{ providerReference: string }>;
+  ): Promise<{ providerReference: string; qrPayload?: string | null }>;
 }
 
 export const PAYMENTS_PROVIDER_ADAPTER = Symbol('PAYMENTS_PROVIDER_ADAPTER');
@@ -96,7 +101,7 @@ export class SandboxPaymentsAdapter implements TopupProviderAdapter {
 
   async createPaymentRequest(
     intent: ProviderIntentInput,
-  ): Promise<{ providerReference: string }> {
+  ): Promise<{ providerReference: string; qrPayload: string | null }> {
     this.assertNotProduction();
     // Deterministic stub: the reference was derived from the same inputs at
     // intent creation, so registration only re-derives and confirms it.
@@ -105,7 +110,8 @@ export class SandboxPaymentsAdapter implements TopupProviderAdapter {
         'PROVIDER_REFERENCE_INVALID',
         'Sandbox provider reference has an unexpected shape',
       );
-    return { providerReference: intent.providerReference };
+    // Nothing to persist: the sandbox payload is rendered from the row itself.
+    return { providerReference: intent.providerReference, qrPayload: null };
   }
 
   private assertNotProduction(): void {

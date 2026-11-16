@@ -604,6 +604,7 @@ describe(
       const result = await ctx.payments.handleProviderEvent(
         rawBody,
         body as unknown as SandboxWebhookEventDto,
+        'sandbox',
       );
       assert.equal(result.kind, 'applied');
       assert.equal(await balanceOf(userId), '50000');
@@ -667,11 +668,13 @@ describe(
       const first = await ctx.payments.handleProviderEvent(
         rawBody,
         body as unknown as SandboxWebhookEventDto,
+        'sandbox',
       );
       assert.equal(first.kind, 'applied');
       const second = await ctx.payments.handleProviderEvent(
         rawBody,
         body as unknown as SandboxWebhookEventDto,
+        'sandbox',
       );
       assert.equal(second.kind, 'duplicate');
       assert.equal(await balanceOf(userId), '50000', 'no second credit');
@@ -700,6 +703,7 @@ describe(
       const result = await ctx.payments.handleProviderEvent(
         rawBody,
         body as unknown as SandboxWebhookEventDto,
+        'sandbox',
       );
       assert.equal(result.kind, 'mismatch');
       assert.equal(await balanceOf(userId), '0');
@@ -729,6 +733,7 @@ describe(
       const result = await ctx.payments.handleProviderEvent(
         rawBody,
         body as unknown as SandboxWebhookEventDto,
+        'sandbox',
       );
       assert.equal(result.kind, 'mismatch');
       assert.equal(await balanceOf(userId), '0');
@@ -743,6 +748,7 @@ describe(
       const result = await ctx.payments.handleProviderEvent(
         rawBody,
         body as unknown as SandboxWebhookEventDto,
+        'sandbox',
       );
       assert.equal(result.kind, 'unmatched');
       assert.equal(await balanceOf(userId), '0');
@@ -772,6 +778,7 @@ describe(
       const result = await ctx.payments.handleProviderEvent(
         rawBody,
         body as unknown as SandboxWebhookEventDto,
+        'sandbox',
       );
       assert.equal(result.kind, 'applied');
       assert.equal(await balanceOf(userId), '25000');
@@ -798,6 +805,7 @@ describe(
       const result = await ctx.payments.handleProviderEvent(
         rawBody,
         body as unknown as SandboxWebhookEventDto,
+        'sandbox',
       );
       assert.equal(result.kind, 'applied');
       assert.equal(await balanceOf(userId), '0');
@@ -823,6 +831,7 @@ describe(
       const result = await ctx.payments.handleProviderEvent(
         rawBody,
         body as unknown as SandboxWebhookEventDto,
+        'sandbox',
       );
       assert.equal(result.kind, 'ignored');
       assert.equal(await balanceOf(userId), '0');
@@ -852,10 +861,12 @@ describe(
         ctx.payments.handleProviderEvent(
           a.rawBody,
           a.body as unknown as SandboxWebhookEventDto,
+          'sandbox',
         ),
         ctx.payments.handleProviderEvent(
           b.rawBody,
           b.body as unknown as SandboxWebhookEventDto,
+          'sandbox',
         ),
       ]);
       const kinds = results.map((r) => r.kind).sort();
@@ -886,10 +897,12 @@ describe(
         ctx.payments.handleProviderEvent(
           e.rawBody,
           e.body as unknown as SandboxWebhookEventDto,
+          'sandbox',
         ),
         ctx.payments.handleProviderEvent(
           e.rawBody,
           e.body as unknown as SandboxWebhookEventDto,
+          'sandbox',
         ),
       ]);
       const applied = results.filter((r) => r.kind === 'applied').length;
@@ -973,6 +986,7 @@ describe(
       const r1 = await ctx.payments.handleProviderEvent(
         first.rawBody,
         first.body,
+        'sandbox',
       );
       assert.equal(r1.kind, 'applied');
       const second = webhookEvent({
@@ -983,6 +997,7 @@ describe(
       const r2 = await ctx.payments.handleProviderEvent(
         second.rawBody,
         second.body,
+        'sandbox',
       );
       assert.equal(r2.kind, 'conflict');
       const bal = await ctx.wallet.getBalance(userId, 'IDR');
@@ -1007,6 +1022,7 @@ describe(
       const r1 = await ctx.payments.handleProviderEvent(
         fail.rawBody,
         fail.body,
+        'sandbox',
       );
       assert.equal(r1.kind, 'applied');
       const succ = webhookEvent({
@@ -1016,6 +1032,7 @@ describe(
       const r2 = await ctx.payments.handleProviderEvent(
         succ.rawBody,
         succ.body,
+        'sandbox',
       );
       assert.equal(r2.kind, 'mismatch');
       if (r2.kind === 'mismatch') assert.equal(r2.reason, 'state');
@@ -1043,7 +1060,11 @@ describe(
         reference: intent.view.providerReference,
         status: 'expired',
       });
-      const r = await ctx.payments.handleProviderEvent(exp.rawBody, exp.body);
+      const r = await ctx.payments.handleProviderEvent(
+        exp.rawBody,
+        exp.body,
+        'sandbox',
+      );
       assert.equal(r.kind, 'applied');
       const t = await pool.query<{
         status: string;

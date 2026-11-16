@@ -17,7 +17,15 @@ import { ApiGuideService } from './modules/api-guide/api-guide.service';
 async function bootstrap() {
   const app = await NestFactory.create<NestFastifyApplication>(
     AppModule,
-    new FastifyAdapter({ bodyLimit: 1048576 }),
+    new FastifyAdapter({
+      bodyLimit: 1048576,
+      // The pilot host puts nginx in front of the API, so without this every
+      // request would look like it came from 127.0.0.1 and the public rate
+      // limiter would lump all anonymous traffic into a single bucket. Trusting
+      // X-Forwarded-For is safe here because the API listens on loopback only
+      // (API_BIND_ADDRESS=127.0.0.1 on the host), so nginx is the sole source.
+      trustProxy: true,
+    }),
     // rawBody keeps the exact webhook bytes for HMAC signature verification.
     { bufferLogs: true, rawBody: true },
   );

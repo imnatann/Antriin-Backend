@@ -374,6 +374,20 @@ export const GUIDE_FLOWS: Block[] = [
       'Berkas yang diunggah sebelum perubahan ini tidak di-backfill; metadatanya masih menempel.',
     ],
   },
+  { kind: 'h3', text: '4.8b Top-up QRIS' },
+  {
+    kind: 'p',
+    text: 'Top-up dimulai dengan POST /me/wallet/topups (wajib Idempotency-Key). Respons awal berstatus pending dan qrisPayload masih null: QR dibuat asinkron oleh worker, karena memanggil provider di dalam transaksi database akan menahan lock selama panggilan jaringan.',
+  },
+  {
+    kind: 'list',
+    items: [
+      'Polling GET /me/wallet/topups/{id} sampai qrisPayload terisi. Untuk provider Xendit, nilainya adalah qr_string asli dari Xendit dan tidak pernah dihitung ulang server.',
+      'Saldo hanya bertambah setelah callback provider tervalidasi, dan tepat satu kali. Cabang status: succeeded menambah saldo, failed/expired menutup intent tanpa kredit, pending diabaikan.',
+      'Kirim ulang dengan Idempotency-Key yang sama mengembalikan intent yang sama (replayed: true), bukan QR kedua.',
+      'Jangan pernah menganggap qrisPayload null sebagai kegagalan permanen; ia berarti QR belum siap.',
+    ],
+  },
   { kind: 'h3', text: '4.9 Aliran peristiwa (SSE)' },
   {
     kind: 'p',
@@ -408,7 +422,7 @@ export const GUIDE_GAPS: Block[] = [
   {
     kind: 'list',
     items: [
-      '**Provider nyata**: OTP, QRIS, refund bank dan payout semuanya sandbox/stub. Webhook pembayaran hanya menerima event sandbox bertanda tangan.',
+      '**Uang nyata**: top-up QRIS memakai **Xendit sandbox** (`PAYMENTS_PROVIDER_MODE=xendit`) dan benar-benar membuat QR di `api.xendit.co`. Yang menjaga uang tetap aman bukan NODE_ENV, melainkan validasi kredensial: server hanya menerima key `xnd_development_*`, dan key produksi ditolak di semua environment. Refund bank, payout, dan OTP masih stub.',
       '**Penyimpanan berkas terkelola**: `POST /media` menulis ke disk lokal (`MEDIA_ROOT`), bukan object storage. Berkas tidak ikut berpindah bila container dibangun ulang dan tidak dibagi antar-instance — jangan andalkan untuk deployment multi-host. Belum ada moderasi gambar, thumbnail, atau pembersihan otomatis berkas yang dihapus.',
       '**Notifikasi push/email/WhatsApp**: hanya notifikasi dalam aplikasi (`GET /me/notifications`, atau aliran SSE `GET /events/stream`). `POST /me/devices` baru mencatat perangkat; belum ada provider push yang mengirim.',
       '**Undangan staf lewat email**: `POST /tenants/{id}/staff/invites` mengembalikan token sekali dan pemilik menyerahkannya sendiri. Belum ada pengiriman email, jadi undangan tidak bisa sampai tanpa jalur manual.',

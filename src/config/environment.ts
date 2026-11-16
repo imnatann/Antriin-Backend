@@ -75,10 +75,16 @@ export const environmentSchema = Joi.object({
     .default(7200),
   // Top-up payments stay provider-disabled until real credentials/contracts exist.
   // Production refuses sandbox mode; sandbox requires an independent webhook secret.
+  // 'xendit' runs the real QR flow against test-mode keys. It is allowed even
+  // with NODE_ENV=production because XENDIT_SECRET_KEY below only accepts an
+  // xnd_development_ key, and a test key cannot move real money. 'sandbox'
+  // (a local stub) stays refused in production.
   PAYMENTS_PROVIDER_MODE: Joi.when('NODE_ENV', {
     is: 'production',
-    then: Joi.string().valid('disabled').default('disabled'),
-    otherwise: Joi.string().valid('disabled', 'sandbox').default('disabled'),
+    then: Joi.string().valid('disabled', 'xendit').default('disabled'),
+    otherwise: Joi.string()
+      .valid('disabled', 'sandbox', 'xendit')
+      .default('disabled'),
   }),
   PAYMENTS_TOPUP_MIN_MINOR: Joi.number()
     .integer()
@@ -113,6 +119,30 @@ export const environmentSchema = Joi.object({
     then: Joi.string().min(32).required(),
     otherwise: Joi.string().allow('').optional(),
   }),
+  // Xendit test-mode credentials. Required only when the Xendit adapter is
+  // selected, so a disabled/sandbox deployment needs neither.
+  XENDIT_SECRET_KEY: Joi.when('PAYMENTS_PROVIDER_MODE', {
+    is: 'xendit',
+    then: Joi.string()
+      .pattern(/^xnd_development_[A-Za-z0-9]+$/)
+      .required()
+      .messages({
+        'string.pattern.base':
+          'XENDIT_SECRET_KEY must be a test-mode key (xnd_development_...); live keys are refused',
+      }),
+    otherwise: Joi.string().allow('').optional(),
+  }),
+  // Static token Xendit sends in the x-callback-token header. This is what
+  // authenticates a callback, so it is mandatory whenever Xendit is enabled.
+  XENDIT_CALLBACK_TOKEN: Joi.when('PAYMENTS_PROVIDER_MODE', {
+    is: 'xendit',
+    then: Joi.string().min(16).required(),
+    otherwise: Joi.string().allow('').optional(),
+  }),
+  // Overridable so a test can point the adapter at a local stub.
+  XENDIT_API_BASE_URL: Joi.string()
+    .uri({ scheme: ['https', 'http'] })
+    .default('https://api.xendit.co'),
   // Image uploads (POST /media) are written to this local directory and served
   // back from GET /media/{id}. Absolute paths are recommended outside local
   // development; the directory is created on boot if it does not exist.

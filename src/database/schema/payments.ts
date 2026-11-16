@@ -33,6 +33,10 @@ export const topupIntents = pgTable(
     // bind once a value is present.
     expiresAt: timestamp('expires_at', { withTimezone: true }),
     succeededAt: timestamp('succeeded_at', { withTimezone: true }),
+    // Migration 0014: a real provider (Xendit) issues the QR payload once, in
+    // the response to its create call, and it can never be recomputed from the
+    // row. The sandbox stub derives its string instead and leaves this null.
+    qrString: varchar('qr_string', { length: 4096 }),
     createdAt: timestamp('created_at', { withTimezone: true })
       .defaultNow()
       .notNull(),
@@ -54,7 +58,10 @@ export const topupIntents = pgTable(
       table.createdAt,
       table.id,
     ),
-    check('topup_intents_provider_check', sql`${table.provider} = 'sandbox'`),
+    check(
+      'topup_intents_provider_check',
+      sql`${table.provider} in ('sandbox', 'xendit')`,
+    ),
     check('topup_intents_currency_check', sql`${table.currency} = 'IDR'`),
     check(
       'topup_intents_amount_check',
@@ -131,7 +138,7 @@ export const paymentRequestOutbox = pgTable(
     ),
     check(
       'payment_request_outbox_provider_check',
-      sql`${table.provider} = 'sandbox'`,
+      sql`${table.provider} in ('sandbox', 'xendit')`,
     ),
     check(
       'payment_request_outbox_status_check',
@@ -176,7 +183,7 @@ export const paymentProviderEvents = pgTable(
     ),
     check(
       'payment_provider_events_provider_check',
-      sql`${table.provider} = 'sandbox'`,
+      sql`${table.provider} in ('sandbox', 'xendit')`,
     ),
     check(
       'payment_provider_events_hash_check',

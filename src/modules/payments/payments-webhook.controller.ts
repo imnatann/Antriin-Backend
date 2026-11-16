@@ -109,6 +109,7 @@ export class PaymentsWebhookController {
     const result = await this.payments.handleProviderEvent(
       rawBody as Buffer,
       body,
+      'sandbox',
     );
     switch (result.kind) {
       case 'applied':
