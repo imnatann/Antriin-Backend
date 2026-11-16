@@ -399,6 +399,28 @@ describe('Xendit webhook HTTP contract', () => {
     assert.equal(stub.received[0].event.eventId, 'qr_abc:succeeded');
   });
 
+  it('answers 200 for an unknown reference so Xendit stops retrying', async () => {
+    // Two things depend on this being 2xx: Xendit retries non-2xx deliveries
+    // forever, and the dashboard's "test webhook" button sends a sample
+    // reference that cannot match any intent and refuses to save the URL on a
+    // non-2xx reply. Nothing is credited either way.
+    stub.received.length = 0;
+    stub.result = { kind: 'unmatched' };
+    const response = await app.inject({
+      method: 'POST',
+      url,
+      headers: { 'x-callback-token': CALLBACK_TOKEN },
+      payload: callbackBody({
+        reference_id: 'reference-from-the-dashboard-test',
+      }),
+    });
+    assert.equal(response.statusCode, 200);
+    const body = response.json() as { data: { outcome: string } };
+    assert.equal(body.data.outcome, 'unmatched');
+    // The service still saw it: recording for reconciliation is not skipped.
+    assert.equal(stub.received.length, 1);
+  });
+
   it('refuses callbacks while payments are disabled', async () => {
     stub.mode = 'disabled';
     try {

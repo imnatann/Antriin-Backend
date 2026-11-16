@@ -124,10 +124,19 @@ export class XenditWebhookController {
             ')',
         });
       case 'unmatched':
-        throw new UnprocessableEntityException({
-          code: 'PAYMENT_EVENT_UNMATCHED',
-          message: 'Provider reference does not match any top-up intent',
-        });
+        // A reference we do not know is answered 200, not 422. Two reasons:
+        // Xendit retries non-2xx deliveries, so a 422 for an old or foreign
+        // reference would be retried forever; and the dashboard's "test
+        // webhook" button sends a sample reference that cannot match any real
+        // intent, and refuses to save the URL unless that probe returns 2xx.
+        // Nothing is credited either way — the event is still recorded with
+        // outcome 'unmatched' and topup_id NULL for reconciliation.
+        return {
+          data: {
+            outcome: 'unmatched',
+            note: 'Reference does not match any top-up intent; recorded, not credited',
+          },
+        };
     }
   }
 

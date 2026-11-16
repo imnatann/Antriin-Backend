@@ -122,6 +122,19 @@ Pemetaan status: `SUCCEEDED`/`COMPLETED`/`PAID` → `succeeded`; `EXPIRED` → `
 
 Token callback yang tidak dikonfigurasi **menolak** semua callback (fail closed), bukan menerima semuanya.
 
+### Kode status callback
+
+| Hasil                                  | Status  | Alasan                                                                                                                                                                                                                                                                  |
+| -------------------------------------- | ------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| applied / duplicate / ignored          | 200     | Efek sudah tercatat atau tidak ada yang perlu diubah                                                                                                                                                                                                                    |
+| unmatched (referensi tak dikenal)      | **200** | Xendit mengulang pengiriman non-2xx tanpa batas, dan tombol "Test webhook" di dashboard mengirim referensi contoh yang tidak mungkin cocok — URL tidak bisa disimpan bila probe itu tidak 2xx. Tidak ada kredit; event tetap dicatat outcome='unmatched', topup_id NULL |
+| mismatch (amount/currency/state)       | 422     | Event asli untuk intent yang ada tetapi tidak konsisten: harus terlihat, bukan didiamkan                                                                                                                                                                                |
+| conflict (event id sama, payload beda) | 409     | Indikasi pemalsuan atau bug provider                                                                                                                                                                                                                                    |
+| Token salah atau hilang                | 401     | —                                                                                                                                                                                                                                                                       |
+| Mode bukan xendit                      | 503     | Provider tidak aktif                                                                                                                                                                                                                                                    |
+
+Bedanya dengan webhook sandbox: di sana unmatched tetap 422, karena hanya test yang mengirim ke endpoint itu dan 422 lebih informatif. Untuk Xendit, 422 justru membuat pengiriman diulang selamanya.
+
 ## Keputusan & asumsi
 
 - TTL sandbox dibaca dari `PAYMENTS_SANDBOX_TOPUP_TTL_SECONDS` (default 3600; konstanta `SANDBOX_TOPUP_TTL_SECONDS` jadi default/fallback test). `expires_at` diisi saat insert (`now() + TTL`, memenuhi CHECK `expires_at > created_at`). **Expiry bersifat informasional**: tidak ada sweeper otomatis pada wave ini, sehingga intent yang lewat `expires_at` TETAP `pending` sampai ada event provider (`expired`/`failed`/`succeeded`) — status tidak berubah sendiri hanya karena umur.

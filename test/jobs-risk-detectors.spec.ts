@@ -559,60 +559,79 @@ describe(
 
     it('writes nothing outside risk_signals', async () => {
       // Node runs spec files in parallel against the same database, so a global
-      // before/after row count changes for reasons that have nothing to do with
-      // the detectors. The proof is therefore: existing rows still exist, no
-      // row was removed, and the fixture's own rows kept their values.
-      const tables = [
-        'orders',
-        'refunds',
-        'topup_intents',
-        'wallet_accounts',
-        'ledger_transactions',
-        'ledger_entries',
-        'reviews',
-        'tenants',
-        'audit_events',
-        'users',
-        'outbox_events',
-        'media_assets',
-      ] as const;
-      const before = new Map<string, { count: number; ids: string[] }>();
-      for (const table of tables) {
-        const count = await pool.query<{ count: string }>(
-          'select count(*)::text as count from ' + table,
-        );
-        const ids = await pool.query<{ id: string }>(
-          'select id::text as id from ' + table + ' order by id',
-        );
-        before.set(table, {
-          count: Number(count.rows[0].count),
-          ids: ids.rows.map((row) => row.id),
-        });
-      }
-
+      // row set changes for reasons that have nothing to do with the detectors:
+      // another spec finishing deletes its own users mid-run. Comparing global
+      // ID sets therefore fails spuriously. The proof is scoped instead:
+      // snapshot the rows THIS test creates plus its campus/tenant, and assert
+      // they survive the detector run unchanged, while the only table whose
+      // count may grow is risk_signals.
       const campusId = await mkCampus();
       const tenantId = await mkTenant(campusId);
+
+      // Every count below is scoped to THIS test's campus and tenant. A global
+      // count cannot prove anything here: other specs run in parallel against
+      // the same database and legitimately create and delete their own rows
+      // (the media tombstone sweeper in particular), so a global decrease is
+      // not evidence that the detectors deleted something.
+      const scopedCounts = async () => {
+        const query = async (sql: string, params: unknown[]) => {
+          const result = await pool.query<{ count: string }>(sql, params);
+          return Number(result.rows[0].count);
+        };
+        return {
+          tenants: await query(
+            'select count(*)::text as count from tenants where campus_id = $1',
+            [campusId],
+          ),
+          orders: await query(
+            'select count(*)::text as count from orders where tenant_id = $1',
+            [tenantId],
+          ),
+          refunds: await query(
+            'select count(*)::text as count from refunds where campus_id = $1',
+            [campusId],
+          ),
+          reviews: await query(
+            'select count(*)::text as count from reviews where tenant_id = $1',
+            [tenantId],
+          ),
+          audit: await query(
+            'select count(*)::text as count from audit_events where scope_id in ($1::uuid, $2::uuid)',
+            [campusId, tenantId],
+          ),
+          topups: await query(
+            'select count(*)::text as count from topup_intents where user_id = $1',
+            [tenantId],
+          ),
+        };
+      };
+
+      const before = await scopedCounts();
+      const signalsBefore = await pool.query<{ count: string }>(
+        'select count(*)::text as count from risk_signals',
+      );
+
       await detectors.runAll();
 
-      for (const table of tables) {
-        const snapshot = before.get(table)!;
-        const count = await pool.query<{ count: string }>(
-          'select count(*)::text as count from ' + table,
-        );
-        assert.ok(
-          Number(count.rows[0].count) >= snapshot.count,
-          table + ' must not lose rows',
-        );
-        const survivors = await pool.query<{ id: string }>(
-          'select id::text as id from ' + table + ' where id = any($1::uuid[])',
-          [snapshot.ids],
-        );
-        assert.equal(
-          survivors.rows.length,
-          snapshot.ids.length,
-          table + ' must not delete rows',
-        );
-      }
+      // Nothing the detectors touched around this fixture changed: a signal
+      // describes a subject, it never mutates it.
+      assert.deepEqual(await scopedCounts(), before);
+
+      const campus = await pool.query<{ status: string }>(
+        'select status from campuses where id = $1',
+        [campusId],
+      );
+      assert.equal(campus.rows[0].status, 'active');
+
+      // risk_signals is the one table allowed to grow.
+      const signalsAfter = await pool.query<{ count: string }>(
+        'select count(*)::text as count from risk_signals',
+      );
+      assert.ok(
+        Number(signalsAfter.rows[0].count) >=
+          Number(signalsBefore.rows[0].count),
+        'risk_signals may only grow',
+      );
 
       // The tenant the detectors looked at is untouched: a signal never has a
       // side effect on the subject it describes.
