@@ -15,11 +15,21 @@ import {
  * - Collision safety comes from the unique index `orders_order_number_uq`
  *   plus a bounded retry on SQLSTATE 23505 in the checkout transaction.
  */
-export function generateOrderNumber(now: Date = new Date()): string {
+/**
+ * `bytes` is injectable so a test can drive the suffix deterministically.
+ * The alphabet is 32 characters and 256 is a multiple of 32, so `byte % 32`
+ * is uniform over the whole alphabet; a test that simply draws thousands of
+ * numbers cannot assert "no collision" because the birthday bound makes that
+ * fail roughly one run in eighty with a genuinely correct generator.
+ */
+export function generateOrderNumber(
+  now: Date = new Date(),
+  bytes: Buffer = randomBytes(ORDER_NUMBER_SUFFIX_LENGTH),
+): string {
   const date = now.toISOString().slice(0, 10).replaceAll('-', '');
-  const bytes = randomBytes(ORDER_NUMBER_SUFFIX_LENGTH);
   let suffix = '';
-  for (const byte of bytes) {
+  for (let index = 0; index < ORDER_NUMBER_SUFFIX_LENGTH; index += 1) {
+    const byte = bytes[index % bytes.length];
     suffix += ORDER_NUMBER_ALPHABET[byte % ORDER_NUMBER_ALPHABET.length];
   }
   return `AN-${date}-${suffix}`;

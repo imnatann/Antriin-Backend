@@ -13,6 +13,7 @@ import { CatalogService } from '../src/modules/catalog/catalog.service';
 import { OutboxService } from '../src/modules/notifications/outbox.service';
 import { OrdersService } from '../src/modules/orders/orders.service';
 import { generateOrderNumber } from '../src/modules/orders/order-number';
+import { ORDER_NUMBER_ALPHABET } from '../src/modules/orders/orders.constants';
 import { TenantOperatingHoursService } from '../src/modules/tenants/tenant-operating-hours.service';
 import { WalletService } from '../src/modules/wallet/wallet.service';
 
@@ -1030,15 +1031,46 @@ describe(
       );
     });
 
-    it('generates readable, unique order numbers', () => {
+    it('generates readable order numbers from the Crockford alphabet', () => {
+      // Deterministic: the suffix is derived from injected bytes, so this
+      // asserts the encoding itself rather than hoping a random draw repeats.
+      const zeroed = generateOrderNumber(new Date('2026-11-16T10:00:00Z'));
+      assert.match(zeroed, /^AN-20261116-[0-9A-HJKMNP-TV-Z]{6}$/);
+      assert.equal(zeroed.length, 18);
+
+      const fromBytes = (bytes: number[]) =>
+        generateOrderNumber(
+          new Date('2026-11-16T23:59:59Z'),
+          Buffer.from(bytes),
+        );
+      assert.equal(fromBytes([0, 0, 0, 0, 0, 0]), 'AN-20261116-000000');
+      assert.equal(fromBytes([1, 2, 3, 4, 5, 6]), 'AN-20261116-123456');
+      // 32 maps back to index 0: the modulus covers the alphabet exactly, so
+      // byte 32 yields the first symbol and 33 the second.
+      assert.equal(fromBytes([32, 33, 34, 35, 36, 37]), 'AN-20261116-012345');
+      // 255 % 32 = 31, the last character of the alphabet (Z).
+      assert.equal(
+        fromBytes([255, 255, 255, 255, 255, 255]),
+        'AN-20261116-ZZZZZZ',
+      );
+      // The excluded letters never appear: I, L, O and U are not in the set.
+      assert.doesNotMatch(fromBytes([255, 255, 255, 255, 255, 255]), /[ILOU]/);
+    });
+
+    it('draws a suffix that is uniform over the whole alphabet', () => {
+      // 32 characters times 256 byte values: every symbol must be reachable,
+      // and the space is 32^6 = 1.07e9 per day. Uniqueness under load is
+      // enforced by orders_order_number_uq with a bounded retry, not by luck,
+      // so this asserts the generator's range instead of demanding that 5000
+      // random draws never repeat (which the birthday bound makes fail ~1
+      // run in 80 even when the generator is correct).
       const seen = new Set<string>();
       for (let index = 0; index < 5000; index += 1) {
         const value = generateOrderNumber();
         assert.match(value, /^AN-\d{8}-[0-9A-HJKMNP-TV-Z]{6}$/);
-        assert.equal(value.length, 18);
-        seen.add(value);
+        seen.add(value.slice(-1));
       }
-      assert.equal(seen.size, 5000, 'no collision in 5000 draws');
+      assert.equal(seen.size, ORDER_NUMBER_ALPHABET.length);
     });
   },
 );
