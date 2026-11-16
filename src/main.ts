@@ -48,6 +48,16 @@ async function bootstrap() {
       .split(',')
       .map((origin) => origin.trim())
       .filter(Boolean),
+    // @fastify/cors defaults `methods` to GET,HEAD,POST, which makes every
+    // browser PUT/PATCH/DELETE fail the preflight even when the origin is
+    // allowed. The API uses all of them (settings, menu, status, decisions,
+    // bank accounts), so they must be listed explicitly.
+    methods: ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+    // Let the browser read the pagination/idempotency/request-id headers.
+    exposedHeaders: ['x-request-id', 'retry-after', 'etag'],
+    // Cache preflight results for 10 minutes: a busy screen otherwise sends an
+    // OPTIONS request before nearly every call.
+    maxAge: 600,
   });
   app.setGlobalPrefix('api/v1');
   app.useGlobalFilters(new ApiExceptionFilter());
