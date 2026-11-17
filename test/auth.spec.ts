@@ -582,20 +582,22 @@ describe(
       challengeIds.push(takeoverId);
       const takeoverOtp = delivery.forChallenge(takeoverId);
       assert.ok(takeoverOtp);
-      const rejected = await app.inject({
+      const resumed = await app.inject({
         method: 'POST',
         url: `/api/v1/auth/otp-challenges/${takeoverId}/verify`,
         payload: { code: takeoverOtp.code },
       });
-      assert.equal(rejected.statusCode, 409);
-      assert.equal(rejected.json().code, 'email_in_use');
-      // The refused login must not have produced a second identity for the
-      // address: only the campus claimant owns it.
+      // Proof of the mailbox resumes the account that already holds it. A
+      // fresh account for the same address would be a second identity for one
+      // mailbox, which is how a takeover starts.
+      assert.equal(resumed.statusCode, 200);
+      assert.equal(resumed.json().data.user.id, otherUserId);
       const holders = await pool.query<{ user_id: string }>(
-        `select distinct user_id from campus_email_verifications
-          where identity_hash = (
-            select identity_hash from campus_email_verifications
-            where user_id = $1 and verified_at is not null
+        `select user_id from auth_identities
+          where channel = 'email' and identity_hash = (
+            select identity_hash from auth_identities
+             where user_id = $1 and channel = 'email'
+             order by created_at limit 1
           )`,
         [otherUserId],
       );

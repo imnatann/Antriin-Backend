@@ -462,8 +462,13 @@ describe(
     it('creates a slot whose start has passed but whose window is still open', async () => {
       const fx = await createFixture(pool);
       const now = Date.now();
-      const start = new Date(now - 60_000); // one minute ago
-      const end = new Date(now + 30 * 60_000); // still open
+      // Clamp to the fixture's 00:00-23:59:59 window: near local midnight a
+      // start "one minute ago" falls on the previous day and the rest of the
+      // window would cross the close time.
+      const start = new Date(Math.max(now - 60_000, startOfJakartaDay(now)));
+      const end = new Date(
+        Math.min(now + 30 * 60_000, startOfJakartaDay(now) + 23.5 * 3_600_000),
+      );
       const created = await availability.createSlot(fx.ownerId, fx.tenantId, {
         startsAt: start.toISOString(),
         endsAt: end.toISOString(),
@@ -1319,6 +1324,16 @@ interface Fixture {
   localDate: string;
   todayLocal: string;
   tomorrowLocal: string;
+}
+
+function startOfJakartaDay(instantMs: number): number {
+  const local = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Jakarta',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(new Date(instantMs));
+  return new Date(`${local}T00:00:00+07:00`).getTime();
 }
 
 function jakartaLocalDate(daysFromNow: number): string {
