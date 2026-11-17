@@ -565,6 +565,13 @@ describe(
       });
       assert.equal(claimed.statusCode, 200);
 
+      // The campus challenge above already spent this identity's resend
+      // cooldown. Age it past the window so this test observes the account
+      // rule rather than the throttle.
+      await pool.query(
+        `update auth_otp_challenges set created_at = now() - interval '10 minutes'
+          where channel = 'email' and created_at > now() - interval '1 minute'`,
+      );
       const takeover = await app.inject({
         method: 'POST',
         url: '/api/v1/auth/otp-challenges',
@@ -582,12 +589,18 @@ describe(
       });
       assert.equal(rejected.statusCode, 409);
       assert.equal(rejected.json().code, 'email_in_use');
-      const identities = await pool.query(
-        `select 1 from auth_identities where channel = 'email' and user_id <> $1
-         and id in (select id from auth_identities where user_id <> $1)`,
+      // The refused login must not have produced a second identity for the
+      // address: only the campus claimant owns it.
+      const holders = await pool.query<{ user_id: string }>(
+        `select distinct user_id from campus_email_verifications
+          where identity_hash = (
+            select identity_hash from campus_email_verifications
+            where user_id = $1 and verified_at is not null
+          )`,
         [otherUserId],
       );
-      assert.equal(identities.rowCount, 1);
+      assert.equal(holders.rowCount, 1);
+      assert.equal(holders.rows[0].user_id, otherUserId);
     });
   },
 );
