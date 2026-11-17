@@ -14,7 +14,6 @@ import { AccessService } from '../src/modules/access/access.service';
 import { AuditService } from '../src/modules/audit/audit.service';
 import type { RiskDetectorRunResult } from '../src/modules/risk/risk-detectors.service';
 import {
-  DELIVER_OTP_DELIVERIES_EVERY_MS,
   DELIVER_OTP_DELIVERIES_JOB,
   EXPIRE_TOPUP_INTENTS_JOB,
   MAINTENANCE_HEALTHCHECK_JOB,
