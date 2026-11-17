@@ -56,6 +56,37 @@ export const environmentSchema = Joi.object({
   // Pilot/dev only: log OTP codes instead of sending them. Independent of
   // NODE_ENV so a pilot host can keep production guards closed. Off by default.
   AUTH_OTP_DEV_ECHO: Joi.boolean().default(false),
+  // Resend is the only real email OTP provider. The key and the sender address
+  // are required together, so a half-configured deployment fails at boot
+  // instead of delivering nothing.
+  RESEND_API_KEY: Joi.when('AUTH_OTP_DEV_ECHO', {
+    is: true,
+    then: Joi.string().allow('').optional(),
+    otherwise: Joi.string().when('NODE_ENV', {
+      is: 'production',
+      then: Joi.string()
+        .pattern(/^re_[A-Za-z0-9_]+$/)
+        .required()
+        .messages({
+          'string.pattern.base':
+            'RESEND_API_KEY must be a Resend API key (re_...) unless AUTH_OTP_DEV_ECHO=true',
+        }),
+      otherwise: Joi.string().allow('').optional(),
+    }),
+  }),
+  AUTH_OTP_FROM_EMAIL: Joi.when('RESEND_API_KEY', {
+    // Predicate, not a Joi schema: `is: Joi.string()` would match an undefined
+    // key and demand a sender address from deployments that only echo codes.
+    is: (key: unknown) => typeof key === 'string' && key.length > 0,
+    then: Joi.string()
+      .pattern(/^[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+$/)
+      .required()
+      .messages({
+        'string.pattern.base':
+          'AUTH_OTP_FROM_EMAIL must be a bare address on a verified Resend domain',
+      }),
+    otherwise: Joi.string().allow('').optional(),
+  }),
   // Order/schedule proposal policy (pilot). Expiry never auto-accepts a proposal
   // and never starts production; preparation stays an explicit authorized action.
   ORDER_PROPOSAL_TTL_SECONDS: Joi.number()

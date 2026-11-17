@@ -220,6 +220,10 @@ export class AuthService {
         displayName = identity.rows[0].display_name;
         userStatus = identity.rows[0].status;
       } else {
+        // Another account may already have claimed this address: as its
+        // campus email, or as an identity on this channel.
+        if (await this.identityClaimedByOther(client, challenge))
+          return { error: 'email_in_use' } as const;
         const insertedUser = await client.query<{
           id: string;
           display_name: string;
@@ -735,6 +739,32 @@ export class AuthService {
     });
   }
 
+  private async identityClaimedByOther(
+    client: PoolClient,
+    challenge: ChallengeRow,
+  ): Promise<boolean> {
+    const email = this.decrypt(
+      this.securityConfig().encryptionKey,
+      challenge.destination_ciphertext,
+    );
+    const emailHash = this.hash(
+      this.securityConfig().secret,
+      `identity:email:${email}`,
+    );
+    await client.query('select pg_advisory_xact_lock(hashtext($1))', [
+      `identity:email:${emailHash}`,
+    ]);
+    const claimed = await client.query<{ source: string }>(
+      `select 'campus' as source from campus_email_verifications
+        where identity_hash = $1
+       union all
+       select 'identity' as source from auth_identities
+        where channel = 'email' and identity_hash = $1`,
+      [emailHash],
+    );
+    return claimed.rows.length > 0;
+  }
+
   private async lockChallenge(
     client: PoolClient,
     challengeId: string,
@@ -997,6 +1027,12 @@ export class AuthService {
       throw new ConflictException({
         code,
         message: 'This campus email cannot be linked to the account',
+      });
+    if (code === 'email_in_use')
+      throw new ConflictException({
+        code,
+        message:
+          'This email is already used by another account; sign in or contact support',
       });
     if (
       code === 'campus_email_domain_not_allowed' ||

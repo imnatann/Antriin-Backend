@@ -2,6 +2,8 @@ import { Injectable, Logger, OnApplicationBootstrap } from '@nestjs/common';
 import { InjectQueue } from '@nestjs/bullmq';
 import type { Queue, RepeatOptions } from 'bullmq';
 import {
+  DELIVER_OTP_DELIVERIES_EVERY_MS,
+  DELIVER_OTP_DELIVERIES_JOB,
   EXPIRE_TOPUP_INTENTS_EVERY_MS,
   EXPIRE_TOPUP_INTENTS_JOB,
   MAINTENANCE_SCHEDULE_TIMEZONE,
@@ -46,6 +48,11 @@ export const MAINTENANCE_SCHEDULES: readonly MaintenanceSchedule[] = [
     id: RUN_REPORT_EXPORTS_JOB,
     jobName: RUN_REPORT_EXPORTS_JOB,
     repeat: { every: RUN_REPORT_EXPORTS_EVERY_MS },
+  },
+  {
+    id: DELIVER_OTP_DELIVERIES_JOB,
+    jobName: DELIVER_OTP_DELIVERIES_JOB,
+    repeat: { every: DELIVER_OTP_DELIVERIES_EVERY_MS },
   },
   {
     id: PURGE_ORDER_IDEMPOTENCY_JOB,

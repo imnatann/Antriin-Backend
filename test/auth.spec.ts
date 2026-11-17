@@ -502,5 +502,92 @@ describe(
       );
       assert.equal(linkedIdentity.rowCount, 2);
     });
+
+    it('refuses a login that would split a campus email across two accounts', async () => {
+      const otherEmail = `split-${randomUUID()}@example.test`;
+      const otherChallenge = await app.inject({
+        method: 'POST',
+        url: '/api/v1/auth/otp-challenges',
+        payload: { channel: 'email', destination: otherEmail },
+      });
+      const otherChallengeId = otherChallenge.json().data.challengeId as string;
+      challengeIds.push(otherChallengeId);
+      const otherOtp = delivery.forChallenge(otherChallengeId);
+      assert.ok(otherOtp);
+      const otherLogin = await app.inject({
+        method: 'POST',
+        url: `/api/v1/auth/otp-challenges/${otherChallengeId}/verify`,
+        payload: { code: otherOtp.code },
+      });
+      const otherUserId = otherLogin.json().data.user.id as string;
+      userIds.push(otherUserId);
+
+      // The first account proves a campus email with an OTP; a later login that
+      // presents the same address as a plain email must not mint a second
+      // account for the same mailbox.
+      const campusId = randomUUID();
+      const domainId = randomUUID();
+      const domain = `split-${randomUUID().replaceAll('-', '')}.example.test`;
+      campusIds.push(campusId);
+      domainIds.push(domainId);
+      await pool.query(
+        `insert into campuses (id, name, timezone, status)
+         values ($1, $2, 'Asia/Jakarta', 'active')`,
+        [campusId, `Split test ${campusId}`],
+      );
+      await pool.query(
+        `insert into campus_email_domains
+           (id, campus_id, domain, active, verified_at)
+         values ($1, $2, $3, true, now())`,
+        [domainId, campusId, domain],
+      );
+      const claimedEmail = `claimer@${domain}`;
+      const claim = await app.inject({
+        method: 'POST',
+        url: '/api/v1/auth/campus-email-verifications',
+        headers: {
+          authorization: `Bearer ${otherLogin.json().data.sessionToken}`,
+        },
+        payload: { email: claimedEmail },
+      });
+      assert.equal(claim.statusCode, 201);
+      const claimChallengeId = claim.json().data.challengeId as string;
+      challengeIds.push(claimChallengeId);
+      const claimOtp = delivery.forChallenge(claimChallengeId);
+      assert.ok(claimOtp);
+      const claimed = await app.inject({
+        method: 'POST',
+        url: `/api/v1/auth/campus-email-verifications/${claimChallengeId}/verify`,
+        headers: {
+          authorization: `Bearer ${otherLogin.json().data.sessionToken}`,
+        },
+        payload: { code: claimOtp.code },
+      });
+      assert.equal(claimed.statusCode, 200);
+
+      const takeover = await app.inject({
+        method: 'POST',
+        url: '/api/v1/auth/otp-challenges',
+        payload: { channel: 'email', destination: claimedEmail },
+      });
+      assert.equal(takeover.statusCode, 201);
+      const takeoverId = takeover.json().data.challengeId as string;
+      challengeIds.push(takeoverId);
+      const takeoverOtp = delivery.forChallenge(takeoverId);
+      assert.ok(takeoverOtp);
+      const rejected = await app.inject({
+        method: 'POST',
+        url: `/api/v1/auth/otp-challenges/${takeoverId}/verify`,
+        payload: { code: takeoverOtp.code },
+      });
+      assert.equal(rejected.statusCode, 409);
+      assert.equal(rejected.json().code, 'email_in_use');
+      const identities = await pool.query(
+        `select 1 from auth_identities where channel = 'email' and user_id <> $1
+         and id in (select id from auth_identities where user_id <> $1)`,
+        [otherUserId],
+      );
+      assert.equal(identities.rowCount, 1);
+    });
   },
 );

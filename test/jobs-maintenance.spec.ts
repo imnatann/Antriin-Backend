@@ -14,6 +14,8 @@ import { AccessService } from '../src/modules/access/access.service';
 import { AuditService } from '../src/modules/audit/audit.service';
 import type { RiskDetectorRunResult } from '../src/modules/risk/risk-detectors.service';
 import {
+  DELIVER_OTP_DELIVERIES_EVERY_MS,
+  DELIVER_OTP_DELIVERIES_JOB,
   EXPIRE_TOPUP_INTENTS_JOB,
   MAINTENANCE_HEALTHCHECK_JOB,
   PURGE_ORDER_IDEMPOTENCY_JOB,
@@ -23,6 +25,7 @@ import {
 } from '../src/jobs/maintenance-jobs.constants';
 import { MaintenanceProcessor } from '../src/jobs/maintenance.processor';
 import { MaintenanceScheduler } from '../src/jobs/maintenance.scheduler';
+import { DeliverOtpDeliveriesJob } from '../src/jobs/otp-delivery-dispatch.job';
 import { SweepMediaTombstonesJob } from '../src/jobs/media-tombstone-sweep.job';
 import { PurgeOrderIdempotencyJob } from '../src/jobs/order-idempotency-purge.job';
 import { ReportExportJob } from '../src/jobs/report-export.job';
@@ -477,6 +480,7 @@ describe(
         media?: unknown;
         risk?: unknown;
         reports?: unknown;
+        otp?: unknown;
       }) {
         return new MaintenanceProcessor(
           (overrides.topup ?? {
@@ -498,6 +502,13 @@ describe(
               failed: 0,
             }),
           }) as unknown as ReportExportJob,
+          (overrides.otp ?? {
+            run: async () => ({
+              job: DELIVER_OTP_DELIVERIES_JOB,
+              sent: 0,
+              deferred: 0,
+            }),
+          }) as unknown as DeliverOtpDeliveriesJob,
         );
       }
       const asJob = (name: string) =>
@@ -523,6 +534,8 @@ describe(
           asJob(SWEEP_MEDIA_TOMBSTONES_JOB),
         );
         assert.equal((sweep as { purged: number }).purged, 0);
+        const otp = await processor.process(asJob(DELIVER_OTP_DELIVERIES_JOB));
+        assert.deepEqual({ sent: (otp as { sent: number }).sent }, { sent: 0 });
       });
 
       it('treats only an unknown job name as unrecoverable', async () => {

@@ -1,6 +1,6 @@
 # Auth API pilot
 
-Status: authentication is implemented behind an OTP delivery port. No real email or WhatsApp provider is configured in this repository; the default adapter returns `503` and never exposes a code. Production activation requires complete secrets and a reviewed delivery adapter. Authentication does not grant domain permissions by itself; the exported `AuthGuard` establishes the current user and session for domain authorization.
+Status: authentication is implemented behind an OTP delivery port. A Resend adapter sends email codes when `RESEND_API_KEY` is set; without it the default adapter returns `503` and never exposes a code. The `phone` channel has an adapter contract but no provider. Production activation requires complete secrets and a verified Resend sending domain. Authentication does not grant domain permissions by itself; the exported `AuthGuard` establishes the current user and session for domain authorization.
 
 ## Endpoints
 
@@ -34,6 +34,11 @@ The application needs these secrets:
 
 - `AUTH_SECRET`: at least 32 UTF-8 bytes. Used as the HMAC key for destination lookup, OTP verification, and session-token lookup.
 - `AUTH_ENCRYPTION_KEY`: base64 encoding of exactly 32 random bytes. Used for AES-256-GCM encryption of destinations and short-lived delivery payloads.
+- `RESEND_API_KEY`: Resend API key. When set, login OTPs are emailed through Resend and production requires it; it takes precedence over `AUTH_OTP_DEV_ECHO`.
+- `AUTH_OTP_FROM_EMAIL`: bare sender address on a domain verified in Resend. Required whenever `RESEND_API_KEY` is set.
+- `AUTH_OTP_DEV_ECHO`: `true` logs codes instead of sending them. Development only — it puts live codes in the application log.
+
+Deliveries are queued in the outbox and sent by `POST /auth/otp-challenges` before it returns, so a code normally arrives within the request. The `deliver-otp-deliveries` maintenance job retries deferred rows every 30 seconds for as long as the challenge is alive; without that job a delivery deferred by a provider outage would never be retried.
 
 For example, generate separate values with a secret manager or `openssl rand -base64 32`; do not commit the generated values. Development can still start without auth secrets, but auth requests return `503 auth_not_configured`. Production configuration must reject missing/invalid secrets and must not bind a development capturing adapter.
 
@@ -47,6 +52,6 @@ Campus domain rows are keyed to a campus, globally unique by lowercase domain, a
 
 The auth schema definitions live in `src/database/schema/auth.ts`; root owns migration generation/integration. Auth queries use `DatabaseService.pool`, so every table and column named in that schema must be included in the migration before endpoints are enabled. Required tables are `auth_identities`, `campus_email_domains`, `auth_otp_challenges`, `auth_otp_deliveries`, `auth_sessions`, and `campus_email_verifications`.
 
-The OTP delivery outbox is committed with the challenge before any provider call. `AuthService.drainOtpDeliveries()` is available for a worker dispatcher; it claims rows with leases/`SKIP LOCKED`, calls the injected delivery port outside DB transactions, and records retry/permanent failure state. The current maintenance worker is not wired to invoke this method, so a real/sandbox adapter must be integrated with a dispatcher before delivery is considered operational.
+The OTP delivery outbox is committed with the challenge before any provider call. `AuthService.drainOtpDeliveries()` claims rows with leases/`SKIP LOCKED`, calls the injected delivery port outside DB transactions, and records retry/permanent failure state. The maintenance worker runs it as the `deliver-otp-deliveries` job every 30 seconds, so the API and the worker can drain concurrently without sending a code twice.
 
 HTTP and PostgreSQL integration tests are gated by `TEST_DATABASE_URL`; they must never load `.env` or fall back to `DATABASE_URL`. Use an isolated test database with the auth migration applied.

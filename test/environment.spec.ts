@@ -8,10 +8,18 @@ const base = {
   DATABASE_URL: 'postgresql://test:test@127.0.0.1:5432/test',
   REDIS_HOST: '127.0.0.1',
 };
+// Email OTP needs a real provider once NODE_ENV=production. `AUTH_OTP_DEV_ECHO`
+// is the only sanctioned way around it, so fixtures that expect a valid
+// production config carry this pair.
+const resend = {
+  RESEND_API_KEY: 're_test_key_0123456789',
+  AUTH_OTP_FROM_EMAIL: 'no-reply@antriin.test',
+};
 describe('Xendit payment mode boundary', () => {
   const keys = {
     AUTH_SECRET: randomBytes(32).toString('hex'),
     AUTH_ENCRYPTION_KEY: randomBytes(32).toString('base64'),
+    ...resend,
   };
   const xendit = {
     PAYMENTS_PROVIDER_MODE: 'xendit',
@@ -71,12 +79,63 @@ describe('Xendit payment mode boundary', () => {
 describe('Environment security boundary', () => {
   it('allows development health with auth disabled but requires production keys', () => {
     assert.equal(environmentSchema.validate(base).error, undefined);
-    for (const keys of [{}, { AUTH_SECRET: '', AUTH_ENCRYPTION_KEY: '' }]) {
+    for (const keys of [
+      { ...resend },
+      { ...resend, AUTH_SECRET: '', AUTH_ENCRYPTION_KEY: '' },
+    ]) {
       assert.ok(
         environmentSchema.validate({ ...base, NODE_ENV: 'production', ...keys })
           .error,
       );
     }
+  });
+
+  it('requires an email OTP provider in production unless codes are echoed to the log', () => {
+    const keys = {
+      AUTH_SECRET: randomBytes(32).toString('hex'),
+      AUTH_ENCRYPTION_KEY: randomBytes(32).toString('base64'),
+    };
+    assert.ok(
+      environmentSchema.validate({ ...base, NODE_ENV: 'production', ...keys })
+        .error,
+    );
+    assert.ok(
+      environmentSchema.validate({
+        ...base,
+        NODE_ENV: 'production',
+        ...keys,
+        AUTH_OTP_FROM_EMAIL: resend.AUTH_OTP_FROM_EMAIL,
+      }).error,
+      'a sender address alone is not enough',
+    );
+    assert.ok(
+      environmentSchema.validate({
+        ...base,
+        NODE_ENV: 'production',
+        ...keys,
+        ...resend,
+        RESEND_API_KEY: 'xnd_development_wrong',
+      }).error,
+      'only a Resend key is accepted',
+    );
+    assert.equal(
+      environmentSchema.validate({
+        ...base,
+        NODE_ENV: 'production',
+        ...keys,
+        ...resend,
+      }).error,
+      undefined,
+    );
+    assert.equal(
+      environmentSchema.validate({
+        ...base,
+        NODE_ENV: 'production',
+        ...keys,
+        AUTH_OTP_DEV_ECHO: true,
+      }).error,
+      undefined,
+    );
   });
   it('rejects malformed encryption keys and excessive session lifetimes', () => {
     const keys = {
@@ -87,19 +146,25 @@ describe('Environment security boundary', () => {
       environmentSchema.validate({
         ...base,
         NODE_ENV: 'production',
+        ...resend,
         AUTH_SECRET: keys.AUTH_SECRET,
         AUTH_ENCRYPTION_KEY: '',
       }).error,
     );
     assert.equal(
-      environmentSchema.validate({ ...base, NODE_ENV: 'production', ...keys })
-        .error,
+      environmentSchema.validate({
+        ...base,
+        NODE_ENV: 'production',
+        ...keys,
+        ...resend,
+      }).error,
       undefined,
     );
     assert.ok(
       environmentSchema.validate({
         ...base,
         ...keys,
+        ...resend,
         AUTH_ENCRYPTION_KEY: 'not-a-key',
       }).error,
     );
@@ -107,6 +172,7 @@ describe('Environment security boundary', () => {
       environmentSchema.validate({
         ...base,
         ...keys,
+        ...resend,
         AUTH_SESSION_TTL_SECONDS: 86401,
       }).error,
     );

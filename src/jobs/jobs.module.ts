@@ -3,6 +3,7 @@ import { BullModule } from '@nestjs/bullmq';
 import { ConfigService } from '@nestjs/config';
 import { DatabaseModule } from '../database/database.module';
 import { AuditModule } from '../modules/audit/audit.module';
+import { AuthModule } from '../modules/auth/auth.module';
 import { PAYMENT_REQUESTS_QUEUE } from '../modules/payments/payment-request.processor';
 import { REFUND_REQUESTS_QUEUE } from '../modules/refunds/refund-request.processor';
 import { PAYOUT_REQUESTS_QUEUE } from '../modules/payouts/payout-request.processor';
@@ -12,6 +13,7 @@ import { MaintenanceProcessor } from './maintenance.processor';
 import { MaintenanceScheduler } from './maintenance.scheduler';
 import { SweepMediaTombstonesJob } from './media-tombstone-sweep.job';
 import { PurgeOrderIdempotencyJob } from './order-idempotency-purge.job';
+import { DeliverOtpDeliveriesJob } from './otp-delivery-dispatch.job';
 import { DOMAIN_EVENTS_QUEUE, MAINTENANCE_QUEUE } from './queue-names';
 import { RiskDetectorJob } from './risk-detector.job';
 import { ReportExportJob } from './report-export.job';
@@ -60,6 +62,9 @@ export { DOMAIN_EVENTS_QUEUE, MAINTENANCE_QUEUE } from './queue-names';
     // ReportExportJob calls ReportingService.runDueExports(); the module
     // exports that service, so the worker resolves it without the HTTP layer.
     ReportingModule,
+    // DeliverOtpDeliveriesJob retries deferred OTP deliveries through
+    // AuthService.drainOtpDeliveries(), which the module exports.
+    AuthModule,
   ],
   providers: [
     ExpireTopupIntentsJob,
@@ -67,6 +72,7 @@ export { DOMAIN_EVENTS_QUEUE, MAINTENANCE_QUEUE } from './queue-names';
     SweepMediaTombstonesJob,
     RiskDetectorJob,
     ReportExportJob,
+    DeliverOtpDeliveriesJob,
     MaintenanceProcessor,
     MaintenanceScheduler,
   ],

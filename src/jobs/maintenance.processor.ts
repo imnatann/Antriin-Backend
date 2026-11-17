@@ -2,6 +2,7 @@ import { Logger } from '@nestjs/common';
 import { Processor, WorkerHost } from '@nestjs/bullmq';
 import { Job, UnrecoverableError } from 'bullmq';
 import {
+  DELIVER_OTP_DELIVERIES_JOB,
   EXPIRE_TOPUP_INTENTS_JOB,
   MAINTENANCE_HEALTHCHECK_JOB,
   PURGE_ORDER_IDEMPOTENCY_JOB,
@@ -11,6 +12,8 @@ import {
 } from './maintenance-jobs.constants';
 import type { MediaTombstoneSweepSummary } from './media-tombstone-sweep.job';
 import { SweepMediaTombstonesJob } from './media-tombstone-sweep.job';
+import type { OtpDeliveryDispatchSummary } from './otp-delivery-dispatch.job';
+import { DeliverOtpDeliveriesJob } from './otp-delivery-dispatch.job';
 import type { OrderIdempotencyPurgeSummary } from './order-idempotency-purge.job';
 import { PurgeOrderIdempotencyJob } from './order-idempotency-purge.job';
 import { MAINTENANCE_QUEUE } from './queue-names';
@@ -27,7 +30,8 @@ export type MaintenanceJobSummary =
   | OrderIdempotencyPurgeSummary
   | MediaTombstoneSweepSummary
   | RiskDetectorJobSummary
-  | ReportExportJobSummary;
+  | ReportExportJobSummary
+  | OtpDeliveryDispatchSummary;
 
 /**
  * Processor for the 'maintenance' queue.
@@ -48,6 +52,7 @@ export class MaintenanceProcessor extends WorkerHost {
     private readonly mediaTombstones: SweepMediaTombstonesJob,
     private readonly riskDetectors: RiskDetectorJob,
     private readonly reportExports: ReportExportJob,
+    private readonly otpDeliveries: DeliverOtpDeliveriesJob,
   ) {
     super();
   }
@@ -89,6 +94,8 @@ export class MaintenanceProcessor extends WorkerHost {
         return this.riskDetectors.run();
       case RUN_REPORT_EXPORTS_JOB:
         return this.reportExports.run();
+      case DELIVER_OTP_DELIVERIES_JOB:
+        return this.otpDeliveries.run();
       default:
         // Only a genuinely unknown job name is unrecoverable: retrying cannot
         // change what the job is.

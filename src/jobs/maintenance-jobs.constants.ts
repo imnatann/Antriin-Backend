@@ -18,6 +18,8 @@ export const SWEEP_MEDIA_TOMBSTONES_JOB = 'sweep-media-tombstones';
 export const RUN_RISK_DETECTORS_JOB = 'run-risk-detectors';
 /** Report exports whose next_run_at has passed are regenerated. */
 export const RUN_REPORT_EXPORTS_JOB = 'run-report-exports';
+/** Deferred OTP deliveries whose provider call failed are retried. */
+export const DELIVER_OTP_DELIVERIES_JOB = 'deliver-otp-deliveries';
 
 /** Hourly cron is deliberately avoided; these intervals are drift-free. */
 export const EXPIRE_TOPUP_INTENTS_EVERY_MS = 60_000;
@@ -28,6 +30,11 @@ export const RUN_RISK_DETECTORS_EVERY_MS = 15 * 60_000;
  * database.
  */
 export const RUN_REPORT_EXPORTS_EVERY_MS = 5 * 60_000;
+/**
+ * OTP resend cooldown is 60s and delivery retries back off from 2s, so a
+ * 30-second pass keeps a deferred code inside its 5-minute TTL.
+ */
+export const DELIVER_OTP_DELIVERIES_EVERY_MS = 30_000;
 
 /** Daily jobs run once a day (off-peak, UTC) because 60s was unnecessary noise. */
 export const PURGE_ORDER_IDEMPOTENCY_CRON = '15 3 * * *';
